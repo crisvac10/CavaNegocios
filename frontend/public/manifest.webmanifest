@@ -1,0 +1,9 @@
+{
+  "name": "CavaNegocios",
+  "short_name": "CavaNegocios",
+  "start_url": "/vender",
+  "display": "standalone",
+  "background_color": "#F3F5F8",
+  "theme_color": "#16324F",
+  "icons": [{ "src": "/icono.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

@@ -5,6 +5,6 @@ Plataforma web multi-tenant de **CavaTech Solutions** para cafeterías, restaura
 | Carpeta | Qué es | Deploy |
 |---|---|---|
 | `backend/` | Django 6 + DRF + PostgreSQL | Railway (root directory: `backend`) |
-| `frontend/` | React + Vite (PWA) — en construcción | Cloudflare Pages |
+| `frontend/` | React + Vite + Tailwind (PWA) | Cloudflare Pages (root directory: `frontend`) |
 
 Detalle del backend, reglas contables y endpoints: [`backend/README.md`](backend/README.md).

@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", "Figtree", ui-sans-serif, sans-serif;
+
+  --color-tinta: #16324f;      /* azul tinta: navegación y títulos */
+  --color-tinta-2: #234a70;
+  --color-fondo: #f3f5f8;
+  --color-papel: #ffffff;
+  --color-linea: #dfe4ea;
+  --color-texto: #1d2733;
+  --color-suave: #5b6675;
+  --color-precio: #f4b400;     /* etiqueta de precio de tienda */
+  --color-precio-claro: #fff4cc;
+  --color-ok: #12805c;
+  --color-ok-claro: #e3f4ec;
+  --color-alerta: #c23b22;
+  --color-alerta-claro: #fbe9e5;
+}
+
+@layer base {
+  html { -webkit-tap-highlight-color: transparent; }
+  body { @apply bg-fondo text-texto font-sans antialiased; }
+  :focus-visible { outline: 3px solid var(--color-precio); outline-offset: 2px; }
+  input, select, textarea { font: inherit; }
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Filo dentado del recibo (la cuenta del POS se ve como un ticket de papel) */
+@utility filo-recibo {
+  height: 10px;
+  background: radial-gradient(circle at 7px 0, var(--color-papel) 6px, transparent 6.5px) 0 0 / 14px 10px repeat-x;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
