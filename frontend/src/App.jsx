@@ -6,6 +6,9 @@ import Vender from "./pages/Vender";
 import Hoy from "./pages/Hoy";
 import Proximamente from "./pages/Proximamente";
 import Recibo from "./pages/Recibo";
+import MenuPublico from "./pages/MenuPublico";
+import Pedidos from "./pages/Pedidos";
+import Productos from "./pages/Productos";
 
 function Cargando() {
   return (
@@ -18,10 +21,12 @@ function Cargando() {
 export default function App() {
   const { usuario, cargando } = useSesion();
   // El recibo digital es público: no requiere sesión
-  if (window.location.pathname.startsWith("/r/")) {
+  // Recibo digital y menú por QR son públicos: no requieren sesión
+  if (/^\/(r|m)\//.test(window.location.pathname)) {
     return (
       <Routes>
         <Route path="/r/:token" element={<Recibo />} />
+        <Route path="/m/:slug" element={<MenuPublico />} />
       </Routes>
     );
   }
@@ -39,7 +44,8 @@ export default function App() {
         <Route path="/" element={<Navigate to="/vender" replace />} />
         <Route path="/vender" element={<Vender />} />
         <Route path="/hoy" element={<Hoy />} />
-        <Route path="/productos" element={<Proximamente titulo="Productos e inventario" />} />
+        <Route path="/pedidos" element={<Pedidos />} />
+        <Route path="/productos" element={<Productos />} />
         <Route path="/fiados" element={<Proximamente titulo="Fiados" />} />
         <Route path="/gastos" element={<Proximamente titulo="Gastos y compras" />} />
         <Route path="/reportes" element={<Proximamente titulo="Reportes" />} />

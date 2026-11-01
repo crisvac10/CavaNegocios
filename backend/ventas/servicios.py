@@ -19,7 +19,7 @@ Origen = MovimientoCaja.Origen
 
 @transaction.atomic
 def crear_venta(negocio, usuario, items, pagos, descuento=0, cliente=None,
-                efectivo_recibido=None, nota=""):
+                efectivo_recibido=None, nota="", entregar_ya=False):
     """
     items: [{producto: id, cantidad, precio?}]   (precio opcional = precio de lista)
     pagos: [{medio, monto}]  (puede ser vacío o parcial si es fiado con cliente)
@@ -84,8 +84,12 @@ def crear_venta(negocio, usuario, items, pagos, descuento=0, cliente=None,
     else:
         efectivo_recibido = None
 
+    # Turno corto que se reinicia cada día ("¡Turno 14!"); sale de la cola al entregarse
+    turno = Consecutivo.siguiente(negocio, f"turno-{timezone.localdate():%Y%m%d}")
+    entregado = entregar_ya or not negocio.usa_cola_pedidos
     venta = Venta.objects.create(
-        negocio=negocio, numero=Consecutivo.siguiente(negocio, "venta"), sesion_caja=sesion,
+        negocio=negocio, numero=Consecutivo.siguiente(negocio, "venta"), sesion_caja=sesion, turno=turno,
+        entregado_en=timezone.now() if entregado else None, entregado_por=usuario if entregado else None,
         usuario=usuario, cliente=cliente, subtotal=subtotal, descuento=descuento, total=total,
         costo_total=costo_total.quantize(Decimal("0.01")), saldo_pendiente=saldo,
         estado=Venta.Estado.FIADO if saldo > 0 else Venta.Estado.PAGADA,
@@ -178,7 +182,7 @@ def texto_recibo(venta, ancho=32):
         filas.append(f"NIT {n.nit}")
     if n.direccion:
         filas.append(n.direccion[:ancho])
-    filas += [linea, f"Recibo #{venta.numero}",
+    filas += [linea, f"Recibo #{venta.numero}" + (f"   TURNO {venta.turno}" if venta.turno else ""),
               timezone.localtime(venta.creado).strftime("%d/%m/%Y %I:%M %p")]
     if venta.cliente:
         filas.append(f"Cliente: {venta.cliente.nombre}"[:ancho])

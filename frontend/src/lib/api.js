@@ -38,11 +38,12 @@ export async function api(ruta, { method = "GET", body, query } = {}) {
   const headers = { Accept: "application/json" };
   const t = token.leer();
   if (t) headers.Authorization = `Token ${t}`;
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const esForm = body instanceof FormData;
+  if (body !== undefined && !esForm) headers["Content-Type"] = "application/json";
 
   let resp;
   try {
-    resp = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+    resp = await fetch(url, { method, headers, body: body === undefined ? undefined : esForm ? body : JSON.stringify(body) });
   } catch {
     throw new ErrorApi("Sin conexión con el servidor. Revisa el internet.", 0);
   }

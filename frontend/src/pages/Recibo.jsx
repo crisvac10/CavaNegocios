@@ -23,7 +23,7 @@ export default function Recibo() {
             {r.negocio.direccion && <p className="text-sm text-suave">{r.negocio.direccion}</p>}
           </header>
           <p className="mt-5 flex justify-between border-y border-dashed border-linea py-2 text-sm text-suave">
-            <span>Recibo #{r.numero}</span>
+            <span>Recibo #{r.numero}{r.turno ? ` · Turno ${r.turno}` : ""}</span>
             <span>{new Date(r.fecha).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" })}</span>
           </p>
           {r.estado === "ANULADA" && <p className="mt-3 text-center font-semibold text-alerta">Venta anulada</p>}

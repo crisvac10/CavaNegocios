@@ -14,6 +14,15 @@ from usuarios.models import Usuario
 from ventas.servicios import crear_venta
 
 
+DESCRIPCIONES = {
+    "Capuchino": "Espresso doble con leche espumada y canela",
+    "Tinto": "Café de origen huilense, recién colado",
+    "Pan de bono": "Horneado cada mañana, con queso costeño",
+    "Jugo natural": "En agua o en leche: mora, lulo o maracuyá",
+    "Croissant": "De mantequilla, hojaldrado",
+}
+
+
 class Command(BaseCommand):
     help = "Crea datos de demostración"
 
@@ -40,7 +49,7 @@ class Command(BaseCommand):
             c = Categoria.objects.create(negocio=n, nombre=cat, orden=orden)
             for nombre, precio, costo in items:
                 p = Producto.objects.create(negocio=n, categoria=c, nombre=nombre, precio=precio, costo=costo,
-                                            stock_minimo=10)
+                                            stock_minimo=10, descripcion=DESCRIPCIONES.get(nombre, ""))
                 mover_stock(p, 300, MovimientoInventario.Tipo.AJUSTE_ENTRADA, usuario=dueno, nota="Stock inicial")
                 prods.append(p)
 
@@ -48,7 +57,7 @@ class Command(BaseCommand):
             p1, p2 = prods[k % len(prods)], prods[(k * 3 + 1) % len(prods)]
             total = p1.precio * 2 + p2.precio
             crear_venta(n, dueno, [{"producto": p1.id, "cantidad": 2}, {"producto": p2.id, "cantidad": 1}],
-                        [{"medio": "EFECTIVO" if k % 3 else "NEQUI", "monto": total}])
+                        [{"medio": "EFECTIVO" if k % 3 else "NEQUI", "monto": total}], entregar_ya=True)
 
         crear_credito(n, dueno, {
             "entidad": "Bancamía", "tipo_entidad": "BANCO", "destino": "EQUIPO", "descripcion": "Máquina espresso",

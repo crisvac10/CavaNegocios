@@ -34,6 +34,7 @@ class Venta(TenantModel):
         ANULADA = "ANULADA", "Anulada"
 
     numero = models.PositiveIntegerField()
+    turno = models.PositiveIntegerField(null=True, blank=True, help_text="Número corto del día para llamar el pedido")
     token_publico = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     sesion_caja = models.ForeignKey("caja.SesionCaja", on_delete=models.PROTECT, null=True, blank=True, related_name="ventas")
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
@@ -48,6 +49,9 @@ class Venta(TenantModel):
     efectivo_recibido = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     cambio = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     nota = models.CharField(max_length=200, blank=True)
+
+    entregado_en = models.DateTimeField(null=True, blank=True)
+    entregado_por = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 
     anulada_por = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     motivo_anulacion = models.CharField(max_length=200, blank=True)

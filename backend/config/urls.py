@@ -1,3 +1,5 @@
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
@@ -11,7 +13,8 @@ from inventario.views import MovimientoViewSet
 from reportes.views import ReportesViewSet
 from saas.views import NegociosSaasViewSet
 from usuarios import views as u
-from ventas.views import ClienteViewSet, VentaViewSet, recibo_publico
+from catalogo.views import menu_publico
+from ventas.views import ClienteViewSet, PedidoViewSet, VentaViewSet, recibo_publico
 
 router = DefaultRouter()
 router.register("categorias", CategoriaViewSet, basename="categoria")
@@ -19,6 +22,7 @@ router.register("productos", ProductoViewSet, basename="producto")
 router.register("inventario", MovimientoViewSet, basename="inventario")
 router.register("clientes", ClienteViewSet, basename="cliente")
 router.register("ventas", VentaViewSet, basename="venta")
+router.register("pedidos", PedidoViewSet, basename="pedido")
 router.register("proveedores", ProveedorViewSet, basename="proveedor")
 router.register("categorias-gasto", CategoriaGastoViewSet, basename="categoria-gasto")
 router.register("gastos", GastoViewSet, basename="gasto")
@@ -39,5 +43,9 @@ urlpatterns = [
     path("api/mi-negocio/", u.MiNegocioView.as_view()),
     path("api/sistema/", u.catalogos_sistema),
     path("api/public/recibo/<uuid:token>/", recibo_publico),
+    path("api/public/menu/<slug:slug>/", menu_publico),
     path("api/", include(router.urls)),
 ]
+
+if settings.DEBUG:  # en producción las fotos se sirven desde Cloudflare R2
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

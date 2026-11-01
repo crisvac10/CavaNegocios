@@ -6,3 +6,5 @@ gunicorn>=23.0
 dj-database-url>=2.2
 psycopg[binary]>=3.2
 python-dotenv>=1.0
+Pillow>=11.0
+boto3>=1.35

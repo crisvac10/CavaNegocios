@@ -1,5 +1,6 @@
 from django.db.models import Q, Sum
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
@@ -44,7 +45,7 @@ class VentaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Venta
-        fields = ["id", "numero", "estado", "cliente", "cliente_nombre", "usuario", "subtotal", "descuento",
+        fields = ["id", "numero", "turno", "entregado_en", "estado", "cliente", "cliente_nombre", "usuario", "subtotal", "descuento",
                   "total", "saldo_pendiente", "efectivo_recibido", "cambio", "nota", "utilidad",
                   "detalles", "pagos", "motivo_anulacion", "token_publico", "creado"]
 
@@ -72,6 +73,7 @@ class VentaEntrada(serializers.Serializer):
     cliente = serializers.IntegerField(required=False, allow_null=True)
     efectivo_recibido = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
     nota = serializers.CharField(required=False, allow_blank=True, default="")
+    entregar_ya = serializers.BooleanField(required=False, default=False)
 
 
 # ---------- Vistas ----------
@@ -167,7 +169,7 @@ class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
                 return Response({"cliente": "No existe."}, status=400)
         venta = servicios.crear_venta(
             self.negocio, request.user, d["items"], d.get("pagos"), d.get("descuento"),
-            cliente, d.get("efectivo_recibido"), d.get("nota", ""),
+            cliente, d.get("efectivo_recibido"), d.get("nota", ""), d.get("entregar_ya", False),
         )
         data = VentaSerializer(venta, context={"request": request}).data
         data["whatsapp_recibo"] = servicios.whatsapp_recibo(venta)
@@ -194,6 +196,55 @@ class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
         return HttpResponse(servicios.texto_recibo(self.get_object(), ancho), content_type="text/plain; charset=utf-8")
 
 
+class PedidoViewSet(TenantMixin, viewsets.GenericViewSet):
+    """
+    Cola de pedidos: ventas aún no entregadas, de la más antigua a la más nueva.
+    GET  /pedidos/                  pendientes
+    GET  /pedidos/?estado=entregados   entregados de hoy (para deshacer un toque equivocado)
+    POST /pedidos/{id}/entregar/
+    POST /pedidos/{id}/deshacer/
+    """
+    queryset = Venta.objects.select_related("cliente").prefetch_related("detalles")
+    modulo = "pedidos"
+
+    def get_queryset(self):
+        return super().get_queryset().exclude(estado=Venta.Estado.ANULADA)
+
+    @staticmethod
+    def _dato(v):
+        return {
+            "id": v.id, "turno": v.turno, "numero": v.numero, "creado": v.creado, "entregado_en": v.entregado_en,
+            "cliente": v.cliente.nombre if v.cliente else None, "nota": v.nota, "total": v.total,
+            "estado_pago": v.estado,
+            "items": [{"nombre": d.nombre, "cantidad": d.cantidad} for d in v.detalles.all()],
+        }
+
+    def list(self, request):
+        qs = self.get_queryset()
+        if request.query_params.get("estado") == "entregados":
+            from negocios.utils import hoy, rango_dia
+            ini, fin = rango_dia(hoy())
+            qs = qs.filter(entregado_en__gte=ini, entregado_en__lt=fin).order_by("-entregado_en")[:60]
+        else:
+            qs = qs.filter(entregado_en__isnull=True).order_by("creado")[:150]
+        return Response([self._dato(v) for v in qs])
+
+    @action(detail=True, methods=["post"])
+    def entregar(self, request, pk=None):
+        v = self.get_object()
+        if v.entregado_en is None:
+            v.entregado_en, v.entregado_por = timezone.now(), request.user
+            v.save(update_fields=["entregado_en", "entregado_por", "actualizado"])
+        return Response(self._dato(v))
+
+    @action(detail=True, methods=["post"])
+    def deshacer(self, request, pk=None):
+        v = self.get_object()
+        v.entregado_en, v.entregado_por = None, None
+        v.save(update_fields=["entregado_en", "entregado_por", "actualizado"])
+        return Response(self._dato(v))
+
+
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
@@ -207,7 +258,7 @@ def recibo_publico(request, token):
     return Response({
         "negocio": {"nombre": n.nombre, "nit": n.nit, "direccion": n.direccion, "telefono": n.telefono,
                     "logo_url": n.logo_url, "mensaje": n.mensaje_recibo},
-        "numero": v.numero, "fecha": v.creado, "estado": v.estado,
+        "numero": v.numero, "turno": v.turno, "fecha": v.creado, "estado": v.estado,
         "cliente": v.cliente.nombre if v.cliente else None,
         "detalles": DetalleSerializer(v.detalles.all(), many=True).data,
         "subtotal": v.subtotal, "descuento": v.descuento, "total": v.total,

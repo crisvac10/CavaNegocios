@@ -339,3 +339,76 @@ class SinCajaRegistradora(Base):
         self.ok(self.c.post("/api/creditos/apartar/", {"monto": 3000}, format="json"), 201)
         self.ok(self.c.post(f"/api/creditos/{cr['id']}/pagar/", {"monto": 3000, "origen_fondos": "FONDO"}, format="json"), 201)
         self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["total_por_medio"]["EFECTIVO"], 500)
+
+
+class FotosMenuPedidos(Base):
+    def test_foto_producto_se_normaliza(self):
+        import io
+        import tempfile
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.test import override_settings
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGBA", (2000, 1500), (200, 120, 40, 255)).save(buf, "PNG")
+        with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp, R2_BUCKET=""):
+            self.login("dueno")
+            r = self.c.post(f"/api/productos/{self.cafe.id}/foto/",
+                            {"foto": SimpleUploadedFile("tinto.png", buf.getvalue(), "image/png")}, format="multipart")
+            self.assertEqual(r.status_code, 200, r.content)
+            url = r.json()["foto_url"]
+            self.assertTrue(url.endswith(".webp"))
+            ruta = tmp + "/" + url.split("/media/", 1)[1]
+            self.assertLessEqual(max(Image.open(ruta).size), 900)
+            # Archivo que no es imagen -> error claro
+            r = self.c.post(f"/api/productos/{self.cafe.id}/foto/",
+                            {"foto": SimpleUploadedFile("x.png", b"no soy imagen", "image/png")}, format="multipart")
+            self.assertEqual(r.status_code, 400)
+            self.ok(self.c.delete(f"/api/productos/{self.cafe.id}/foto/"))
+            self.cafe.refresh_from_db()
+            self.assertEqual(self.cafe.foto_url, "")
+        # El cajero no puede cambiar fotos
+        self.login("cajero")
+        self.assertEqual(self.c.delete(f"/api/productos/{self.cafe.id}/foto/").status_code, 403)
+
+    def test_menu_publico(self):
+        Producto.objects.filter(pk=self.pan.pk).update(en_menu=False)
+        anon = APIClient()
+        m = self.ok(anon.get(f"/api/public/menu/{self.neg.slug}/"))
+        nombres = [p["nombre"] for c in m["categorias"] for p in c["productos"]]
+        self.assertEqual(nombres, ["Tinto"])
+        self.assertTrue(m["categorias"][0]["productos"][0]["agotado"])  # stock 0
+        self.assertNotIn("costo", m["categorias"][0]["productos"][0])
+        self.neg.modulos = ["pos"]
+        self.neg.save()
+        self.assertEqual(anon.get(f"/api/public/menu/{self.neg.slug}/").status_code, 404)
+
+    def test_cola_de_pedidos(self):
+        self.login("cajero")
+        self.abrir_caja()
+        v1 = self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}], "nota": "sin azúcar",
+                                                  "pagos": [{"medio": "EFECTIVO", "monto": 2000}]}, format="json"), 201)
+        v2 = self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.pan.id}], "entregar_ya": True,
+                                                  "pagos": [{"medio": "NEQUI", "monto": 3000}]}, format="json"), 201)
+        self.assertEqual((v1["turno"], v2["turno"]), (1, 2))
+        cola = self.ok(self.c.get("/api/pedidos/"))
+        self.assertEqual([p["turno"] for p in cola], [1])  # el 2 se entregó de una vez
+        self.assertEqual(cola[0]["nota"], "sin azúcar")
+        self.ok(self.c.post(f"/api/pedidos/{v1['id']}/entregar/"))
+        self.assertEqual(self.ok(self.c.get("/api/pedidos/")), [])
+        self.assertEqual(len(self.ok(self.c.get("/api/pedidos/?estado=entregados"))), 2)
+        self.ok(self.c.post(f"/api/pedidos/{v1['id']}/deshacer/"))
+        self.assertEqual(len(self.ok(self.c.get("/api/pedidos/"))), 1)
+        # Otro negocio no ve ni toca la cola
+        self.login("luis")
+        self.assertEqual(self.ok(self.c.get("/api/pedidos/")), [])
+        self.assertEqual(self.c.post(f"/api/pedidos/{v1['id']}/entregar/").status_code, 404)
+
+    def test_sin_cola_se_entrega_de_una(self):
+        self.neg.usa_cola_pedidos = False
+        self.neg.save()
+        self.login("dueno")
+        self.abrir_caja()
+        self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}],
+                                             "pagos": [{"medio": "EFECTIVO", "monto": 2000}]}, format="json"), 201)
+        self.assertEqual(self.ok(self.c.get("/api/pedidos/")), [])

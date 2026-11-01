@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../lib/api";
 import {
-  BarChart3, Boxes, CalendarCheck, HandCoins, Landmark, LogOut, Menu, Receipt, Settings, ShoppingBasket, X,
+  BarChart3, Boxes, CalendarCheck, ChefHat, HandCoins, Landmark, LogOut, Menu, Receipt, Settings, ShoppingBasket, X,
 } from "lucide-react";
 import { useSesion } from "../context/Sesion";
 
 const NAV = [
   { a: "/vender", texto: "Vender", Icono: ShoppingBasket, modulo: "pos" },
+  { a: "/pedidos", texto: "Pedidos", Icono: ChefHat, modulo: "pedidos", cola: true },
   { a: "/hoy", texto: "Hoy", Icono: CalendarCheck, modulo: "caja" },
   { a: "/fiados", texto: "Fiados", Icono: HandCoins, modulo: "fiados" },
   { a: "/gastos", texto: "Gastos", Icono: Receipt, modulo: "gastos" },
@@ -19,7 +22,21 @@ const NAV = [
 export default function Layout() {
   const { usuario, negocio, esAdmin, tieneModulo, salir } = useSesion();
   const [menuAbierto, setMenuAbierto] = useState(false);
-  const items = NAV.filter((i) => (!i.modulo || tieneModulo(i.modulo)) && (!i.admin || esAdmin));
+  const usaCola = tieneModulo("pedidos") && negocio?.usa_cola_pedidos;
+  const items = NAV.filter(
+    (i) => (!i.modulo || tieneModulo(i.modulo)) && (!i.admin || esAdmin) && (!i.cola || usaCola)
+  );
+  // Pedidos pendientes para el contador del menú (la página de Pedidos refresca más seguido)
+  const { data: pendientes = [] } = useQuery({
+    queryKey: ["pedidos", "pendientes"],
+    queryFn: () => api("/pedidos/"),
+    enabled: Boolean(usaCola),
+    refetchInterval: 15_000,
+  });
+  const contador = (a) =>
+    a === "/pedidos" && pendientes.length > 0 ? (
+      <span className="ml-auto rounded-full bg-precio px-2 py-0.5 text-xs font-bold text-tinta num">{pendientes.length}</span>
+    ) : null;
   const principales = items.slice(0, 3);
 
   return (
@@ -43,6 +60,7 @@ export default function Layout() {
             >
               <Icono size={19} strokeWidth={2} aria-hidden />
               {texto}
+              {contador(a)}
             </NavLink>
           ))}
         </nav>
@@ -74,8 +92,13 @@ export default function Layout() {
           >
             {({ isActive }) => (
               <>
-                <span className={`rounded-full px-4 py-1 ${isActive ? "bg-precio-claro" : ""}`}>
+                <span className={`relative rounded-full px-4 py-1 ${isActive ? "bg-precio-claro" : ""}`}>
                   <Icono size={21} aria-hidden />
+                  {a === "/pedidos" && pendientes.length > 0 && (
+                    <span className="absolute -right-0.5 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-precio px-1 text-[11px] font-bold text-tinta num">
+                      {pendientes.length}
+                    </span>
+                  )}
                 </span>
                 {texto}
               </>

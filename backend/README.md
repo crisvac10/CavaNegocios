@@ -12,7 +12,7 @@ pip install -r requirements.txt
 python manage.py migrate
 python manage.py crear_demo      # cavatech/cavatech123 · demo/demo1234 · cajero/demo1234
 python manage.py runserver
-python manage.py test tests      # 12 pruebas end-to-end
+python manage.py test tests      # 16 pruebas end-to-end
 ```
 
 ## Deploy en Railway
@@ -62,10 +62,16 @@ Roles: **SUPERADMIN** (CavaTech) · **ADMIN** (dueño) · **CAJERO** (vende, abr
 | Caja | `caja/dia/?fecha=` (cuadre diario), `caja/actual/`, `caja/abrir/`, `caja/movimiento/`, `caja/cerrar/`, `caja/{id}/movimientos/` |
 | Reportes | `reportes/resumen/`, `reportes/diario/`, `reportes/top-productos/`, `reportes/exportar/?tipo=ventas\|gastos` |
 | Créditos | `creditos/preview/`, `creditos/`, `creditos/tablero/`, `creditos/{id}/pagar/`, `creditos/{id}/abonar-capital/`, `creditos/{id}/simular/`, `creditos/{id}/plan/`, `creditos/estrategia/`, `creditos/apartar/`, `creditos/liberar-fondo/`, `creditos/fondo/` |
-| Público | `public/recibo/{token}/` (recibo digital sin login) |
+| Pedidos | `pedidos/` (cola), `pedidos/?estado=entregados`, `pedidos/{id}/entregar/`, `pedidos/{id}/deshacer/` |
+| Fotos | `productos/{id}/foto/` (POST multipart / DELETE; se normaliza a WebP ≤900px y va a Cloudflare R2) |
+| Público | `public/recibo/{token}/`, `public/menu/{slug}/` (menú del QR) |
 | Super Admin | `saas/negocios/`, `saas/negocios/{id}/suspender/`, `.../reactivar/`, `saas/negocios/metricas/`, `tasas-usura/` |
 
 Filtros de fecha: `?desde=YYYY-MM-DD&hasta=YYYY-MM-DD` (hora de Bogotá).
+
+## Fotos en Cloudflare R2
+
+Define `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` y `R2_PUBLIC_URL` (bucket público o dominio propio). Sin ellas, en desarrollo las fotos se guardan en `media/`.
 
 ## Pendiente (siguiente entrega)
 

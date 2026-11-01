@@ -9,7 +9,7 @@ import Cobro from "../components/Cobro";
 import { Aviso, Boton, Hoja, InputPesos } from "../components/ui";
 
 /* ---------- Producto como etiqueta de precio ---------- */
-function Etiqueta({ p, cantidad, onAgregar }) {
+function Etiqueta({ p, cantidad, onAgregar, conFotos }) {
   const agotado = p.controla_stock && Number(p.stock) <= 0;
   return (
     <button
@@ -18,6 +18,14 @@ function Etiqueta({ p, cantidad, onAgregar }) {
         cantidad ? "border-tinta ring-2 ring-tinta" : "border-linea hover:border-tinta/40"
       }`}
     >
+      {p.foto_url ? (
+        <img src={p.foto_url} alt="" loading="lazy" className="-mx-3 -mt-3 mb-2.5 h-24 w-[calc(100%+1.5rem)] max-w-none rounded-t-[11px] object-cover" />
+      ) : conFotos ? (
+        // Si otros productos tienen foto, este conserva la misma altura con sus iniciales
+        <span className="-mx-3 -mt-3 mb-2.5 grid h-24 w-[calc(100%+1.5rem)] place-items-center rounded-t-[11px] bg-fondo font-display text-3xl font-extrabold text-tinta/25" aria-hidden>
+          {p.nombre.split(" ").filter((w) => w.length > 2).slice(0, 2).map((w) => w[0]).join("").toUpperCase()}
+        </span>
+      ) : null}
       <span className="line-clamp-2 pr-6 font-semibold leading-snug">{p.nombre}</span>
       <span className="mt-3 flex items-end justify-between gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-md bg-precio px-2 py-1 font-display text-[15px] font-bold text-tinta num">
@@ -40,7 +48,10 @@ function Etiqueta({ p, cantidad, onAgregar }) {
 }
 
 /* ---------- La cuenta, con forma de recibo ---------- */
-function Cuenta({ lineas, subtotal, descuento, total, onCantidad, onQuitar, onDescuento, onVaciar, onCobrar, puedeVender }) {
+function Cuenta({
+  lineas, subtotal, descuento, total, onCantidad, onQuitar, onDescuento, onVaciar, onCobrar, puedeVender,
+  nota, onNota, usaCola, entregarYa, onEntregarYa,
+}) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 rounded-t-xl bg-papel px-4 pt-4 shadow-[0_1px_0_var(--color-linea)]">
@@ -97,6 +108,20 @@ function Cuenta({ lineas, subtotal, descuento, total, onCantidad, onQuitar, onDe
       <div className="bg-papel px-4 pb-4">
         {lineas.length > 0 && (
           <div className="space-y-2 border-t border-dashed border-linea pt-3 text-sm">
+            <input
+              value={nota}
+              onChange={(e) => onNota(e.target.value)}
+              maxLength={200}
+              placeholder="Nota del pedido (ej. sin azúcar, para llevar)"
+              className="w-full rounded-lg border border-linea px-3 py-2.5 outline-none focus:border-tinta"
+              aria-label="Nota del pedido"
+            />
+            {usaCola && (
+              <label className="flex items-center gap-2.5 py-1 text-texto">
+                <input type="checkbox" checked={entregarYa} onChange={(e) => onEntregarYa(e.target.checked)} className="h-4 w-4 accent-tinta" />
+                Se entrega de una vez (no pasa a la cola)
+              </label>
+            )}
             <div className="flex justify-between text-suave"><span>Subtotal</span><span className="num">{pesos(subtotal)}</span></div>
             <label className="flex items-center justify-between gap-3 text-suave">
               <span>Descuento</span>
@@ -146,6 +171,11 @@ function VentaLista({ venta, onNueva }) {
     <Hoja titulo="Venta registrada" onCerrar={onNueva}>
       <div className="text-center">
         <CheckCircle2 size={44} className="mx-auto text-ok" aria-hidden />
+        {venta.turno && !venta.entregado_en ? (
+          <p className="mx-auto mt-3 w-fit rounded-xl bg-precio px-5 py-2 text-tinta">
+            Turno <span className="font-display text-3xl font-extrabold num">{venta.turno}</span>
+          </p>
+        ) : null}
         <p className="mt-2 text-suave">Recibo #{venta.numero}</p>
         <p className="font-display text-4xl font-extrabold text-tinta num">{pesos(venta.total)}</p>
         {Number(venta.cambio) > 0 && (
@@ -171,12 +201,14 @@ function VentaLista({ venta, onNueva }) {
 
 /* ---------- Página ---------- */
 export default function Vender() {
-  const { negocio, esAdmin } = useSesion();
+  const { negocio, esAdmin, tieneModulo } = useSesion();
   const qc = useQueryClient();
   const [categoria, setCategoria] = useState("todas");
   const [busqueda, setBusqueda] = useState("");
   const [carrito, setCarrito] = useState({}); // id -> cantidad
   const [descuento, setDescuento] = useState(0);
+  const [nota, setNota] = useState("");
+  const [entregarYa, setEntregarYa] = useState(false);
   const [cobrando, setCobrando] = useState(false);
   const [cuentaMovil, setCuentaMovil] = useState(false);
   const [abrirCaja, setAbrirCaja] = useState(false);
@@ -203,6 +235,7 @@ export default function Vender() {
     );
   }, [productos, categoria, busqueda]);
 
+  const conFotos = visibles.some((p) => p.foto_url);
   const lineas = Object.entries(carrito)
     .map(([id, cantidad]) => ({ p: productos.find((x) => x.id === Number(id)), cantidad }))
     .filter((l) => l.p);
@@ -218,7 +251,8 @@ export default function Vender() {
       else copia[id] = n;
       return copia;
     });
-  const vaciar = () => { setCarrito({}); setDescuento(0); };
+  const vaciar = () => { setCarrito({}); setDescuento(0); setNota(""); setEntregarYa(false); };
+  const usaCola = tieneModulo("pedidos") && negocio?.usa_cola_pedidos;
 
   const alVender = (venta) => {
     setCobrando(false);
@@ -228,6 +262,7 @@ export default function Vender() {
     qc.invalidateQueries({ queryKey: ["productos"] });
     qc.invalidateQueries({ queryKey: ["caja"] });
     qc.invalidateQueries({ queryKey: ["clientes"] });
+    qc.invalidateQueries({ queryKey: ["pedidos"] });
   };
 
   const propsCuenta = {
@@ -238,6 +273,7 @@ export default function Vender() {
     onVaciar: vaciar,
     onCobrar: () => setCobrando(true),
     puedeVender: !cajaCerrada,
+    nota, onNota: setNota, usaCola, entregarYa, onEntregarYa: setEntregarYa,
   };
 
   return (
@@ -299,7 +335,7 @@ export default function Vender() {
         ) : (
           <div className="grid grid-cols-2 gap-2.5 pb-28 sm:grid-cols-3 xl:grid-cols-4 lg:pb-6">
             {visibles.map((p) => (
-              <Etiqueta key={p.id} p={p} cantidad={carrito[p.id] || 0} onAgregar={agregar} />
+              <Etiqueta key={p.id} p={p} cantidad={carrito[p.id] || 0} onAgregar={agregar} conFotos={conFotos} />
             ))}
           </div>
         )}
@@ -336,6 +372,7 @@ export default function Vender() {
           descuento={descuento}
           negocio={negocio}
           items={lineas.map(({ p, cantidad }) => ({ producto: p.id, cantidad }))}
+          extra={{ nota, entregar_ya: entregarYa }}
           onListo={alVender}
           onCerrar={() => setCobrando(false)}
         />

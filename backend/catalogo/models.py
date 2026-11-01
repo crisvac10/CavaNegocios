@@ -22,6 +22,8 @@ class Producto(TenantModel):
     categoria = models.ForeignKey(Categoria, on_delete=models.SET_NULL, null=True, blank=True, related_name="productos")
     nombre = models.CharField(max_length=120)
     codigo = models.CharField(max_length=40, blank=True, help_text="Código interno o de barras")
+    descripcion = models.CharField(max_length=160, blank=True, help_text="Se muestra en el menú digital")
+    foto_url = models.URLField(max_length=500, blank=True)
     precio = models.DecimalField(max_digits=14, decimal_places=2)
     costo = models.DecimalField(max_digits=14, decimal_places=2, default=0, help_text="Costo promedio ponderado")
     controla_stock = models.BooleanField(default=True)
@@ -30,6 +32,7 @@ class Producto(TenantModel):
     unidad = models.CharField(max_length=20, default="und")
     activo = models.BooleanField(default=True)
     favorito = models.BooleanField(default=False, help_text="Aparece primero en el POS")
+    en_menu = models.BooleanField(default=True, help_text="Visible en el menú digital (QR)")
 
     class Meta:
         ordering = ["-favorito", "nombre"]

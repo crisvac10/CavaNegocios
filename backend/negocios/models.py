@@ -12,6 +12,8 @@ class Modulo(models.TextChoices):
     CAJA = "caja", "Caja"
     REPORTES = "reportes", "Reportes"
     CREDITOS = "creditos", "Créditos y plan de pago"
+    PEDIDOS = "pedidos", "Cola de pedidos"
+    MENU = "menu", "Menú digital (QR)"
 
 
 MODULOS_BASE = [m.value for m in Modulo]
@@ -52,6 +54,8 @@ class Negocio(models.Model):
         default=False,
         help_text="Turnos de caja con apertura/cierre y arqueo. Si es False se vende directo y "
                   "el dinero se cuadra por día (cuadre diario).")
+    usa_cola_pedidos = models.BooleanField(
+        default=True, help_text="Cada venta entra a la cola como pendiente hasta marcarla entregada.")
     bloquear_sin_stock = models.BooleanField(default=False)
     permitir_fiado = models.BooleanField(default=True)
     mensaje_recibo = models.CharField(max_length=200, blank=True, default="¡Gracias por su compra!")

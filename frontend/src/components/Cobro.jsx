@@ -104,7 +104,7 @@ function SelectorCliente({ cliente, onElegir }) {
   );
 }
 
-export default function Cobro({ total, items, descuento, negocio, onListo, onCerrar }) {
+export default function Cobro({ total, items, descuento, negocio, extra = {}, onListo, onCerrar }) {
   const medios = negocio.medios_pago_activos;
   const [modo, setModo] = useState("pago"); // pago | fiar
   const [medio, setMedio] = useState(medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0]);
@@ -141,6 +141,7 @@ export default function Cobro({ total, items, descuento, negocio, onListo, onCer
           descuento,
           cliente: modo === "fiar" ? cliente.id : null,
           efectivo_recibido: efectivo > 0 && recibido > 0 ? recibido : null,
+          ...extra,
         },
       }),
     onSuccess: onListo,

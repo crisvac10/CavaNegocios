@@ -99,6 +99,16 @@ TIME_ZONE = "America/Bogota"
 USE_I18N = True
 USE_TZ = True
 
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+# Cloudflare R2 (fotos). Sin estas variables, en desarrollo se guarda en MEDIA_ROOT.
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_BUCKET = os.getenv("R2_BUCKET", "")
+R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL", "")
+
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
