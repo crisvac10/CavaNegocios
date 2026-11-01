@@ -287,7 +287,7 @@ export default function Vender() {
           </div>
         )}
 
-        <div className="sticky top-0 z-10 -mx-4 bg-fondo/95 px-4 pb-3 pt-1 backdrop-blur lg:-mx-6 lg:px-6">
+        <div className="sticky top-14 z-10 md:top-0 -mx-4 bg-fondo/95 px-4 pb-3 pt-1 backdrop-blur lg:-mx-6 lg:px-6">
           <div className="flex items-center gap-2 rounded-xl border border-linea bg-papel px-3 focus-within:border-tinta">
             <Search size={19} className="text-suave" aria-hidden />
             <input
@@ -348,7 +348,7 @@ export default function Vender() {
 
       {/* Barra de cuenta (celular / tablet) */}
       {lineas.length > 0 && (
-        <div className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-20 px-3 pb-2 md:bottom-0 md:pl-[calc(14rem+0.75rem)] lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 z-20 px-3 pb-[calc(0.5rem+env(safe-area-inset-bottom))] md:pl-[calc(14rem+0.75rem)] lg:hidden">
           <button
             onClick={() => setCuentaMovil(true)}
             className="flex w-full items-center justify-between rounded-xl bg-tinta px-5 py-4 text-white shadow-lg"
