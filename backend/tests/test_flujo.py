@@ -14,7 +14,7 @@ from usuarios.models import Usuario
 
 class Base(TestCase):
     def setUp(self):
-        self.neg = Negocio.objects.create(nombre="Café Aroma")
+        self.neg = Negocio.objects.create(nombre="Café Aroma", usa_caja=True)
         self.otro = Negocio.objects.create(nombre="Tienda Don Luis", tipo="TIENDA")
         self.admin = self._u("dueno", "ADMIN", self.neg)
         self.cajero = self._u("cajero", "CAJERO", self.neg)
@@ -303,3 +303,39 @@ class Creditos(Base):
         self.assertEqual(cierre["efectivo_esperado"], 10000)
         self.assertEqual(cierre["diferencia"], 0)
         self.assertEqual(self.ok(self.c.get("/api/creditos/fondo/"))["saldo"], 10000)
+
+
+class SinCajaRegistradora(Base):
+    """Cafetería sin caja registradora: vende directo y cuadra por día."""
+
+    def setUp(self):
+        super().setUp()
+        self.neg.usa_caja = False
+        self.neg.save()
+
+    def test_vende_sin_abrir_caja_y_cuadra_el_dia(self):
+        self.login("dueno")
+        self.stock(self.cafe, 50)
+        self.assertEqual(self.c.post("/api/caja/abrir/", {"base_inicial": 0}, format="json").status_code, 400)
+        self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id, "cantidad": 3}],
+                                             "pagos": [{"medio": "EFECTIVO", "monto": 6000}]}, format="json"), 201)
+        self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id, "cantidad": 1}],
+                                             "pagos": [{"medio": "NEQUI", "monto": 2000}]}, format="json"), 201)
+        cats = self.ok(self.c.get("/api/categorias-gasto/"))
+        self.ok(self.c.post("/api/gastos/", {"categoria": cats[0]["id"], "descripcion": "Leche", "monto": 2500}, format="json"), 201)
+
+        dia = self.ok(self.c.get("/api/caja/dia/"))
+        self.assertFalse(dia["usa_caja"])
+        self.assertEqual(dia["total_por_medio"]["EFECTIVO"], 3500)
+        self.assertEqual(dia["total_por_medio"]["NEQUI"], 2000)
+        self.assertEqual(dia["entradas"], 8000)
+        self.assertEqual(dia["salidas"], 2500)
+        self.assertFalse(self.ok(self.c.get("/api/caja/actual/"))["usa_caja"])
+
+        # Créditos: apartar y pagar también funcionan sin caja
+        cr = self.ok(self.c.post("/api/creditos/", {"entidad": "Coop", "monto": 1_000_000, "tasa": 24, "num_cuotas": 6,
+                     "fecha_desembolso": str(hoy()), "fecha_primera_cuota": str(hoy() + dt.timedelta(days=30))},
+                                 format="json"), 201)
+        self.ok(self.c.post("/api/creditos/apartar/", {"monto": 3000}, format="json"), 201)
+        self.ok(self.c.post(f"/api/creditos/{cr['id']}/pagar/", {"monto": 3000, "origen_fondos": "FONDO"}, format="json"), 201)
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["total_por_medio"]["EFECTIVO"], 500)

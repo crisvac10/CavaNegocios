@@ -4,7 +4,6 @@ import datetime as dt
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from caja.models import SesionCaja
 from catalogo.models import Categoria, Producto
 from creditos.servicios import crear_credito
 from inventario.models import MovimientoInventario
@@ -45,7 +44,6 @@ class Command(BaseCommand):
                 mover_stock(p, 300, MovimientoInventario.Tipo.AJUSTE_ENTRADA, usuario=dueno, nota="Stock inicial")
                 prods.append(p)
 
-        SesionCaja.objects.create(negocio=n, usuario_apertura=dueno, base_inicial=100000)
         for k in range(25):
             p1, p2 = prods[k % len(prods)], prods[(k * 3 + 1) % len(prods)]
             total = p1.precio * 2 + p2.precio

@@ -38,7 +38,8 @@ class CajaViewSet(TenantMixin, viewsets.ReadOnlyModelViewSet):
     """
     GET  /caja/                 historial de cierres
     GET  /caja/actual/          caja abierta + resumen en vivo
-    POST /caja/abrir/           {base_inicial}
+    GET  /caja/dia/?fecha=      cuadre diario (sirve con o sin caja registradora)
+    POST /caja/abrir/           {base_inicial}           (solo si el negocio usa caja)
     POST /caja/movimiento/      entrada/salida manual {tipo: ENTRADA|SALIDA, monto, medio, concepto}
     POST /caja/cerrar/          {efectivo_contado, apartar_credito?, credito?, nota?}
     GET  /caja/{id}/movimientos/
@@ -48,14 +49,34 @@ class CajaViewSet(TenantMixin, viewsets.ReadOnlyModelViewSet):
     modulo = "caja"
 
     @action(detail=False)
+    def dia(self, request):
+        import datetime as dt
+        from negocios.utils import hoy
+        try:
+            fecha = dt.date.fromisoformat(request.query_params["fecha"]) if request.query_params.get("fecha") else hoy()
+        except ValueError:
+            raise ValidationError("Fecha inválida, usa YYYY-MM-DD.")
+        data = servicios.resumen_dia(self.negocio, fecha)
+        data["usa_caja"] = self.negocio.usa_caja
+        return Response(data)
+
+    def _exigir_caja(self):
+        if not self.negocio.usa_caja:
+            raise ValidationError("Este negocio no usa caja registradora. Actívala en la configuración "
+                                  "o usa el cuadre diario (/caja/dia/).")
+
+    @action(detail=False)
     def actual(self, request):
+        if not self.negocio.usa_caja:
+            return Response({"usa_caja": False, "abierta": False, "cuadre_hoy": servicios.resumen_dia(self.negocio, timezone.localdate())})
         s = servicios.sesion_abierta(self.negocio, requerida=False)
         if not s:
-            return Response({"abierta": False})
-        return Response({"abierta": True, "sesion": SesionSerializer(s).data, "resumen": servicios.resumen_sesion(s)})
+            return Response({"usa_caja": True, "abierta": False})
+        return Response({"usa_caja": True, "abierta": True, "sesion": SesionSerializer(s).data, "resumen": servicios.resumen_sesion(s)})
 
     @action(detail=False, methods=["post"])
     def abrir(self, request):
+        self._exigir_caja()
         base = Decimal(str(request.data.get("base_inicial", 0) or 0))
         if base < 0:
             raise ValidationError("La base no puede ser negativa.")
@@ -85,6 +106,7 @@ class CajaViewSet(TenantMixin, viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=["post"])
     @transaction.atomic
     def cerrar(self, request):
+        self._exigir_caja()
         s = servicios.sesion_abierta(self.negocio)
         s = SesionCaja.objects.select_for_update().get(pk=s.pk)
         try:

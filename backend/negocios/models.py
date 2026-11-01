@@ -48,6 +48,10 @@ class Negocio(models.Model):
     # Configuración operativa
     modulos = models.JSONField(default=list, blank=True, help_text="Módulos activos. Vacío = todos.")
     medios_pago = models.JSONField(default=list, blank=True, help_text="Medios de pago habilitados. Vacío = todos.")
+    usa_caja = models.BooleanField(
+        default=False,
+        help_text="Turnos de caja con apertura/cierre y arqueo. Si es False se vende directo y "
+                  "el dinero se cuadra por día (cuadre diario).")
     bloquear_sin_stock = models.BooleanField(default=False)
     permitir_fiado = models.BooleanField(default=True)
     mensaje_recibo = models.CharField(max_length=200, blank=True, default="¡Gracias por su compra!")

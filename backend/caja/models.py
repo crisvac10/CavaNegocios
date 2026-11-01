@@ -52,7 +52,8 @@ class MovimientoCaja(TenantModel):
         ENTRADA_MANUAL = "ENTRADA_MANUAL", "Entrada manual"
         SALIDA_MANUAL = "SALIDA_MANUAL", "Salida / retiro manual"
 
-    sesion = models.ForeignKey(SesionCaja, on_delete=models.PROTECT, related_name="movimientos")
+    sesion = models.ForeignKey(SesionCaja, on_delete=models.PROTECT, null=True, blank=True,
+                               related_name="movimientos", help_text="Vacío si el negocio no usa caja")
     origen = models.CharField(max_length=20, choices=Origen.choices)
     medio = models.CharField(max_length=15, choices=MedioPago.choices, default=MedioPago.EFECTIVO)
     monto = models.DecimalField(max_digits=14, decimal_places=2, help_text="+ entra / - sale")

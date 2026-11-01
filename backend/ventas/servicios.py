@@ -24,7 +24,7 @@ def crear_venta(negocio, usuario, items, pagos, descuento=0, cliente=None,
     items: [{producto: id, cantidad, precio?}]   (precio opcional = precio de lista)
     pagos: [{medio, monto}]  (puede ser vacío o parcial si es fiado con cliente)
     """
-    sesion = caja.sesion_abierta(negocio)
+    sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
     if not items:
         raise ValidationError("La venta no tiene productos.")
 
@@ -115,7 +115,7 @@ def abonar_fiado(negocio, usuario, cliente, monto, medio):
         raise ValidationError("El abono debe ser mayor a cero.")
     if medio not in negocio.medios_pago_activos:
         raise ValidationError("Medio de pago no habilitado.")
-    sesion = caja.sesion_abierta(negocio)
+    sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
     pendientes = Venta.objects.select_for_update().filter(
         negocio=negocio, cliente=cliente, estado=Venta.Estado.FIADO).order_by("creado")
     deuda = sum((v.saldo_pendiente for v in pendientes), CERO)
@@ -148,7 +148,7 @@ def anular_venta(negocio, usuario, venta, motivo):
         raise ValidationError("La venta ya está anulada.")
     if not motivo:
         raise ValidationError("Indica el motivo de la anulación.")
-    sesion = caja.sesion_abierta(negocio)
+    sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
 
     for d in venta.detalles.select_related("producto"):
         if d.producto.controla_stock:

@@ -35,7 +35,7 @@ class Venta(TenantModel):
 
     numero = models.PositiveIntegerField()
     token_publico = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-    sesion_caja = models.ForeignKey("caja.SesionCaja", on_delete=models.PROTECT, related_name="ventas")
+    sesion_caja = models.ForeignKey("caja.SesionCaja", on_delete=models.PROTECT, null=True, blank=True, related_name="ventas")
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
     cliente = models.ForeignKey(Cliente, on_delete=models.PROTECT, null=True, blank=True, related_name="ventas")
     estado = models.CharField(max_length=8, choices=Estado.choices, default=Estado.PAGADA)
@@ -80,7 +80,7 @@ class PagoVenta(TenantModel):
     medio = models.CharField(max_length=15, choices=MedioPago.choices)
     monto = models.DecimalField(max_digits=14, decimal_places=2)
     es_abono = models.BooleanField(default=False)
-    sesion_caja = models.ForeignKey("caja.SesionCaja", on_delete=models.PROTECT, related_name="+")
+    sesion_caja = models.ForeignKey("caja.SesionCaja", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
 
     class Meta:

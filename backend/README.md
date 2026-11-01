@@ -12,7 +12,7 @@ pip install -r requirements.txt
 python manage.py migrate
 python manage.py crear_demo      # cavatech/cavatech123 · demo/demo1234 · cajero/demo1234
 python manage.py runserver
-python manage.py test tests      # 11 pruebas end-to-end
+python manage.py test tests      # 12 pruebas end-to-end
 ```
 
 ## Deploy en Railway
@@ -33,7 +33,8 @@ Roles: **SUPERADMIN** (CavaTech) · **ADMIN** (dueño) · **CAJERO** (vende, abr
 - **Utilidad neta** = operativa − intereses de créditos.
 - Compras de mercancía **no** son gasto (pasan a costo cuando se venden; costo promedio ponderado).
 - Desembolso de crédito **no** es ingreso; abono a capital **no** es gasto. Solo el interés resta.
-- Todo el dinero pasa por un libro único (`MovimientoCaja`): el cierre de caja es su suma.
+- Todo el dinero pasa por un libro único (`MovimientoCaja`).
+- **Caja opcional** (`Negocio.usa_caja`, por defecto apagada): sin caja registradora se vende directo y el dinero se revisa con el **cuadre diario** (`caja/dia/`, por medio de pago). Con caja: apertura con base, cierre con arqueo y diferencia.
 
 ## Créditos y plan de pago
 
@@ -58,7 +59,7 @@ Roles: **SUPERADMIN** (CavaTech) · **ADMIN** (dueño) · **CAJERO** (vende, abr
 | POS | `ventas/`, `ventas/{id}/anular/`, `ventas/{id}/recibo/`, `ventas/{id}/ticket/?ancho=80` |
 | Fiados | `clientes/`, `clientes/deudores/`, `clientes/{id}/abonar/`, `.../estado_cuenta/`, `.../recordatorio/` |
 | Gastos | `proveedores/`, `categorias-gasto/`, `gastos/`, `gastos/{id}/anular/`, `compras/` |
-| Caja | `caja/actual/`, `caja/abrir/`, `caja/movimiento/`, `caja/cerrar/`, `caja/{id}/movimientos/` |
+| Caja | `caja/dia/?fecha=` (cuadre diario), `caja/actual/`, `caja/abrir/`, `caja/movimiento/`, `caja/cerrar/`, `caja/{id}/movimientos/` |
 | Reportes | `reportes/resumen/`, `reportes/diario/`, `reportes/top-productos/`, `reportes/exportar/?tipo=ventas\|gastos` |
 | Créditos | `creditos/preview/`, `creditos/`, `creditos/tablero/`, `creditos/{id}/pagar/`, `creditos/{id}/abonar-capital/`, `creditos/{id}/simular/`, `creditos/{id}/plan/`, `creditos/estrategia/`, `creditos/apartar/`, `creditos/liberar-fondo/`, `creditos/fondo/` |
 | Público | `public/recibo/{token}/` (recibo digital sin login) |
