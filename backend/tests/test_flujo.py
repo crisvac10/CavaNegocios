@@ -1,0 +1,305 @@
+import datetime as dt
+from decimal import Decimal
+
+from django.test import TestCase
+from rest_framework.test import APIClient
+
+from catalogo.models import Categoria, Producto
+from creditos import calculos as C
+from creditos.models import Credito, TasaUsura
+from negocios.models import Negocio
+from negocios.utils import hoy
+from usuarios.models import Usuario
+
+
+class Base(TestCase):
+    def setUp(self):
+        self.neg = Negocio.objects.create(nombre="Café Aroma")
+        self.otro = Negocio.objects.create(nombre="Tienda Don Luis", tipo="TIENDA")
+        self.admin = self._u("dueno", "ADMIN", self.neg)
+        self.cajero = self._u("cajero", "CAJERO", self.neg)
+        self.admin_otro = self._u("luis", "ADMIN", self.otro)
+        self.sa = self._u("cavatech", "SUPERADMIN", None)
+        self.cat = Categoria.objects.create(negocio=self.neg, nombre="Bebidas")
+        self.cafe = Producto.objects.create(negocio=self.neg, categoria=self.cat, nombre="Tinto", precio=2000, costo=500, stock=0)
+        self.pan = Producto.objects.create(negocio=self.neg, nombre="Pan de bono", precio=3000, costo=1000, stock=0)
+        self.c = APIClient()
+
+    def _u(self, username, rol, negocio):
+        return Usuario.objects.create_user(username, password="clave123", rol=rol, negocio=negocio)
+
+    def login(self, username):
+        r = self.c.post("/api/login/", {"username": username, "password": "clave123"})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.c.credentials(HTTP_AUTHORIZATION="Token " + r.json()["token"])
+
+    def ok(self, r, code=200):
+        self.assertEqual(r.status_code, code, r.content)
+        return r.json() if r.get("Content-Type", "").startswith("application/json") else r
+
+    def stock(self, p, cantidad):
+        self.ok(self.c.post("/api/inventario/", {"producto": p.id, "tipo": "AJUSTE_ENTRADA", "cantidad": cantidad}, format="json"), 201)
+
+    def abrir_caja(self, base=50000):
+        return self.ok(self.c.post("/api/caja/abrir/", {"base_inicial": base}, format="json"), 201)
+
+
+class TenantYPermisos(Base):
+    def test_aislamiento_entre_negocios(self):
+        Producto.objects.create(negocio=self.otro, nombre="Arroz", precio=4000)
+        self.login("luis")
+        nombres = [p["nombre"] for p in self.ok(self.c.get("/api/productos/"))]
+        self.assertEqual(nombres, ["Arroz"])
+        # No puede usar una categoría de otro negocio
+        r = self.c.post("/api/productos/", {"nombre": "X", "precio": 1, "categoria": self.cat.id}, format="json")
+        self.assertEqual(r.status_code, 400)
+        # Ni ver un producto ajeno por id
+        self.assertEqual(self.c.get(f"/api/productos/{self.cafe.id}/").status_code, 404)
+
+    def test_cajero_no_ve_creditos_ni_reportes(self):
+        self.login("cajero")
+        self.assertEqual(self.c.get("/api/creditos/").status_code, 403)
+        self.assertEqual(self.c.get("/api/reportes/resumen/").status_code, 403)
+        self.assertEqual(self.c.post("/api/productos/", {"nombre": "x", "precio": 1}).status_code, 403)
+
+    def test_modulo_desactivado(self):
+        self.neg.modulos = ["catalogo", "pos", "caja"]
+        self.neg.save()
+        self.login("dueno")
+        self.assertEqual(self.c.get("/api/creditos/").status_code, 403)
+        self.ok(self.c.get("/api/productos/"))
+
+    def test_superadmin_suspende_y_corta_sesion(self):
+        self.login("dueno")
+        token_dueno = self.c._credentials["HTTP_AUTHORIZATION"]
+        self.login("cavatech")
+        n = self.ok(self.c.post("/api/saas/negocios/", {"nombre": "Panadería Sol", "admin_username": "sol",
+                                                        "admin_password": "clave123"}, format="json"), 201)
+        self.ok(self.c.post(f"/api/saas/negocios/{self.neg.id}/suspender/"))
+        self.c.credentials(HTTP_AUTHORIZATION=token_dueno)
+        self.assertEqual(self.c.get("/api/productos/").status_code, 401)  # token borrado
+        self.assertEqual(self.c.post("/api/login/", {"username": "dueno", "password": "clave123"}).status_code, 403)
+        self.login("sol")
+        self.assertEqual(self.ok(self.c.get("/api/yo/"))["negocio"]["id"], n["id"])
+
+
+class VentasCajaInventario(Base):
+    def test_flujo_completo_dia(self):
+        self.login("dueno")
+        self.stock(self.cafe, 100)
+        self.stock(self.pan, 20)
+        self.assertEqual(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}]}, format="json").status_code, 400)  # sin caja
+        self.abrir_caja(50000)
+
+        # Venta mixta con cambio
+        v = self.ok(self.c.post("/api/ventas/", {
+            "items": [{"producto": self.cafe.id, "cantidad": 2}, {"producto": self.pan.id, "cantidad": 1}],
+            "pagos": [{"medio": "EFECTIVO", "monto": 5000}, {"medio": "NEQUI", "monto": 2000}],
+            "efectivo_recibido": 10000}, format="json"), 201)
+        self.assertEqual(v["total"], 7000)
+        self.assertEqual(v["cambio"], 5000)
+        self.assertEqual(v["estado"], "PAGADA")
+        self.assertIn("wa.me", v["whatsapp_recibo"])
+        self.cafe.refresh_from_db()
+        self.assertEqual(self.cafe.stock, 98)
+
+        # Pagos mayores al total -> error
+        r = self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}], "pagos": [{"medio": "EFECTIVO", "monto": 9000}]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        # Fiado sin cliente -> error; con cliente -> ok
+        r = self.c.post("/api/ventas/", {"items": [{"producto": self.pan.id, "cantidad": 2}]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        cli = self.ok(self.c.post("/api/clientes/", {"nombre": "Doña Marta", "telefono": "3001234567"}, format="json"), 201)
+        f = self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.pan.id, "cantidad": 2}], "cliente": cli["id"],
+                                                 "pagos": [{"medio": "EFECTIVO", "monto": 1000}]}, format="json"), 201)
+        self.assertEqual(f["estado"], "FIADO")
+        self.assertEqual(f["saldo_pendiente"], 5000)
+        deud = self.ok(self.c.get("/api/clientes/deudores/"))
+        self.assertEqual(deud["total_cartera"], 5000)
+        ab = self.ok(self.c.post(f"/api/clientes/{cli['id']}/abonar/", {"monto": 5000, "medio": "DAVIPLATA"}, format="json"), 201)
+        self.assertEqual(ab["saldo_cliente"], 0)
+        self.assertIn("57300", self.ok(self.c.get(f"/api/clientes/{cli['id']}/recordatorio/"))["whatsapp"])
+
+        # Gasto pagado de caja
+        cats = self.ok(self.c.get("/api/categorias-gasto/"))
+        self.ok(self.c.post("/api/gastos/", {"categoria": cats[0]["id"], "descripcion": "Bolsa de hielo", "monto": 3000}, format="json"), 201)
+
+        # Compra: costo promedio ponderado (98 tintos a 500 + 2 a 1500 -> 520)
+        self.ok(self.c.post("/api/compras/", {"items": [{"producto": self.cafe.id, "cantidad": 2, "costo_unitario": 1500}],
+                                              "pagado_de_caja": False}, format="json"), 201)
+        self.cafe.refresh_from_db()
+        self.assertEqual(self.cafe.stock, 100)
+        self.assertEqual(self.cafe.costo, Decimal("520.00"))
+
+        # Anular la primera venta: devuelve stock y dinero
+        self.ok(self.c.post(f"/api/ventas/{v['id']}/anular/", {"motivo": "Error de digitación"}, format="json"))
+        self.cafe.refresh_from_db()
+        self.assertEqual(self.cafe.stock, 102)
+
+        actual = self.ok(self.c.get("/api/caja/actual/"))["resumen"]
+        # efectivo: 50000 base + 5000 venta + 1000 fiado - 3000 hielo - 5000 anulación = 48000
+        self.assertEqual(actual["efectivo_esperado"], 48000)
+        self.assertEqual(actual["total_por_medio"]["DAVIPLATA"], 5000)
+        cierre = self.ok(self.c.post("/api/caja/cerrar/", {"efectivo_contado": 47000}, format="json"))
+        self.assertEqual(cierre["diferencia"], -1000)
+        self.assertIn("Faltan", cierre["alerta"])
+
+        # Reporte: venta anulada fuera; fiado sí cuenta como venta
+        res = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual(res["ventas_netas"], 6000)
+        self.assertEqual(res["costo_ventas"], 2000)
+        self.assertEqual(res["gastos_operativos"], 3000)
+        self.assertEqual(res["utilidad_operativa"], 1000)
+        self.assertEqual(self.c.get("/api/reportes/exportar/?tipo=ventas").status_code, 200)
+
+        # Recibo público sin login
+        venta = self.ok(self.c.get(f"/api/ventas/{f['id']}/"))
+        anon = APIClient()
+        self.ok(anon.get(f"/api/public/recibo/{venta['token_publico']}/"))
+
+    def test_bloqueo_sin_stock(self):
+        self.neg.bloquear_sin_stock = True
+        self.neg.save()
+        self.login("dueno")
+        self.abrir_caja()
+        r = self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}], "pagos": [{"medio": "EFECTIVO", "monto": 2000}]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Stock insuficiente", str(r.content.decode()))
+
+
+class MotorFinanciero(TestCase):
+    def test_tabla_francesa_cuadra(self):
+        i = C.ea_a_periodica(C.a_ea(24, "EA"), "MENSUAL")
+        filas = C.tabla_francesa(1_000_000, i, n=12)
+        self.assertEqual(len(filas), 12)
+        self.assertEqual(sum(f["capital"] for f in filas), 1_000_000)
+        self.assertEqual(filas[-1]["saldo_final"], 0)
+        tir = C.periodica_a_ea(C.tir_periodica(1_000_000, [f["valor"] for f in filas]), "MENSUAL")
+        self.assertAlmostEqual(tir, 0.24, places=3)
+
+    def test_interes_plano_es_mas_caro(self):
+        # "gota a gota": 20% mensual, 30 cuotas diarias -> costo real muy por encima
+        filas = C.tabla_plana(100_000, 0.20, 30, "DIARIA")
+        self.assertEqual(sum(f["valor"] for f in filas), 120_000)
+        ea_real = C.periodica_a_ea(C.tir_periodica(100_000, [f["valor"] for f in filas]), "DIARIA")
+        self.assertGreater(ea_real, (1.20 ** 12) - 1)
+
+
+class Creditos(Base):
+    def crear(self, **extra):
+        datos = {"entidad": "Bancamía", "monto": 6_000_000, "tasa": 30, "tipo_tasa": "EA", "frecuencia": "MENSUAL",
+                 "num_cuotas": 12, "fecha_desembolso": str(hoy()),
+                 "fecha_primera_cuota": str(hoy() + dt.timedelta(days=30))}
+        datos.update(extra)
+        return self.ok(self.c.post("/api/creditos/", datos, format="json"), 201)
+
+    def test_credito_completo(self):
+        self.login("dueno")
+        TasaUsura.objects.create(modalidad="CONSUMO", vigente_desde=hoy() - dt.timedelta(days=10), tasa_ea=Decimal("25"))
+        prev = self.ok(self.c.post("/api/creditos/preview/", {"monto": 6_000_000, "tasa": 30, "num_cuotas": 12}, format="json"))
+        self.assertTrue(prev["supera_usura"])
+        self.assertEqual(len(prev["tabla"]), 12)
+
+        self.stock(self.cafe, 1000)
+        self.abrir_caja(100000)
+        cr = self.crear(desembolso_a_caja=True, medio_desembolso="EFECTIVO")
+        self.assertEqual(len(cr["cuotas"]), 12)
+        self.assertEqual(sum(Decimal(str(q["capital"])) for q in cr["cuotas"]), 6_000_000)
+        cuota = Decimal(str(cr["cuota_valor"]))
+
+        # Desembolso entra a caja pero NO es utilidad
+        res = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual(res["utilidad_operativa"], 0)
+        self.assertEqual(res["no_operativo"]["desembolsos_credito"], 6_000_000)
+
+        # Ventas del día para que exista utilidad
+        for _ in range(5):
+            self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id, "cantidad": 100}],
+                                                 "pagos": [{"medio": "EFECTIVO", "monto": 200000}]}, format="json"), 201)
+
+        # Tablero: meta del día, semáforo, alerta de usura
+        t = self.ok(self.c.get("/api/creditos/tablero/"))
+        self.assertEqual(t["creditos_activos"], 1)
+        self.assertGreater(t["meta_dia"]["apartar_hoy"], 0)
+        self.assertEqual(t["meta_dia"]["utilidad_operativa_hoy"], 750000)
+        self.assertEqual(t["meta_dia"]["semaforo_hoy"], "VERDE")
+        self.assertTrue(any("usura" in a["mensaje"] for a in t["alertas"]))
+
+        # Apartar desde la caja: sale efectivo y entra al fondo
+        self.ok(self.c.post("/api/creditos/apartar/", {"monto": 700000, "credito": cr["id"]}, format="json"), 201)
+        caja = self.ok(self.c.get("/api/caja/actual/"))["resumen"]
+        self.assertEqual(caja["efectivo_esperado"], 100000 + 6_000_000 + 1_000_000 - 700000)
+
+        # Pagar la primera cuota desde el fondo
+        pago = self.ok(self.c.post(f"/api/creditos/{cr['id']}/pagar/",
+                                   {"monto": str(cuota), "origen_fondos": "FONDO"}, format="json"), 201)
+        self.assertEqual(Decimal(str(pago["aplicado_capital"])) + Decimal(str(pago["aplicado_interes"])), cuota)
+        self.assertEqual(self.ok(self.c.get("/api/creditos/fondo/"))["saldo"], 700000 - cuota)
+        # Fondo insuficiente -> error claro
+        r = self.c.post(f"/api/creditos/{cr['id']}/pagar/", {"monto": str(cuota), "origen_fondos": "FONDO"}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+        # Interés pagado sí resta a la utilidad neta
+        res = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual(res["intereses_creditos"], pago["aplicado_interes"])
+        self.assertEqual(res["utilidad_neta"], res["utilidad_operativa"] - pago["aplicado_interes"])
+
+        # Simulación y plan recomendado
+        sim = self.ok(self.c.post(f"/api/creditos/{cr['id']}/simular/", {"abono_extra_periodico": 200000}, format="json"))
+        self.assertGreater(sim["periodos_menos"], 0)
+        self.assertGreater(sim["intereses_ahorrados"], 0)
+        plan = self.ok(self.c.get(f"/api/creditos/{cr['id']}/plan/?porcentaje=50"))
+        self.assertGreater(plan["abono_extra_por_cuota"], 0)
+        self.assertIn("antes", plan["mensaje"])
+        self.assertEqual(len(plan["escenarios"]), 3)
+
+        # Abono a capital reduciendo plazo: termina antes y ahorra intereses
+        ab = self.ok(self.c.post(f"/api/creditos/{cr['id']}/abonar-capital/",
+                                 {"monto": 1_500_000, "estrategia": "REDUCIR_PLAZO", "origen_fondos": "CAJA"}, format="json"), 201)
+        self.assertGreater(ab["efecto"]["cuotas_menos"], 0)
+        self.assertGreater(ab["efecto"]["intereses_ahorrados"], 0)
+        det = self.ok(self.c.get(f"/api/creditos/{cr['id']}/"))
+        self.assertEqual(Decimal(str(det["cuota_valor"])), cuota)  # misma cuota
+        capital_total = sum(Decimal(str(q["capital"])) for q in det["cuotas"]) + Decimal(1_500_000)
+        self.assertEqual(capital_total, 6_000_000)  # todo cuadra al peso
+
+        # Abono reduciendo cuota: mismo número de cuotas, cuota menor
+        antes = len([q for q in det["cuotas"] if q["estado"] == "PENDIENTE"])
+        ab2 = self.ok(self.c.post(f"/api/creditos/{cr['id']}/abonar-capital/",
+                                  {"monto": 500_000, "estrategia": "REDUCIR_CUOTA", "origen_fondos": "EXTERNO"}, format="json"), 201)
+        self.assertEqual(ab2["efecto"]["cuotas_menos"], 0)
+        self.assertLess(Decimal(str(ab2["efecto"]["despues"]["cuota"])), cuota)
+        det = self.ok(self.c.get(f"/api/creditos/{cr['id']}/"))
+        self.assertEqual(len([q for q in det["cuotas"] if q["estado"] == "PENDIENTE"]), antes)
+
+        # Pagar todo lo pendiente -> crédito PAGADO
+        pend = det["resumen"]["deuda_pendiente_cuotas"]
+        self.ok(self.c.post(f"/api/creditos/{cr['id']}/pagar/", {"monto": pend, "origen_fondos": "EXTERNO"}, format="json"), 201)
+        self.assertEqual(Credito.objects.get(pk=cr["id"]).estado, "PAGADO")
+
+    def test_plano_no_permite_abono_y_estrategias(self):
+        self.login("dueno")
+        plano = self.crear(entidad="Don Pedro", tipo_entidad="PRESTAMISTA", sistema="PLANO", monto=1_000_000,
+                           tasa=10, tipo_tasa="MENSUAL", frecuencia="DIARIA", num_cuotas=60)
+        self.assertGreater(Decimal(str(plano["tasa_ea_real"])), Decimal("213"))  # 10% mensual ≈ 213.8% EA
+        r = self.c.post(f"/api/creditos/{plano['id']}/abonar-capital/", {"monto": 100000}, format="json")
+        self.assertEqual(r.status_code, 400)
+        sim = self.ok(self.c.post(f"/api/creditos/{plano['id']}/simular/", {"abono_unico": 300000}, format="json"))
+        self.assertEqual(sim["intereses_ahorrados"], 0)
+        self.assertIn("Negócialo", sim["nota"])
+
+        self.crear(entidad="Banco", monto=3_000_000, tasa=25, num_cuotas=24)
+        est = self.ok(self.c.get("/api/creditos/estrategia/?extra_mensual=300000"))
+        self.assertTrue(est["avalancha"]["orden_pago"][0].startswith("Don Pedro"))  # el más caro primero
+        self.assertLessEqual(est["avalancha"]["interes_total"], est["bola_de_nieve"]["interes_total"])
+        self.assertGreater(est["ahorro_vs_sin_extra"], 0)
+
+    def test_cierre_de_caja_aparta_para_credito(self):
+        self.login("dueno")
+        cr = self.crear()
+        self.abrir_caja(20000)
+        cierre = self.ok(self.c.post("/api/caja/cerrar/", {"efectivo_contado": 10000, "apartar_credito": 10000,
+                                                           "credito": cr["id"]}, format="json"))
+        self.assertEqual(cierre["efectivo_esperado"], 10000)
+        self.assertEqual(cierre["diferencia"], 0)
+        self.assertEqual(self.ok(self.c.get("/api/creditos/fondo/"))["saldo"], 10000)

@@ -1,0 +1,130 @@
+"""
+Cálculo de estadísticas. Reglas contables clave:
+- Ventas netas = total de ventas no anuladas (incluye lo fiado: se vendió).
+- Costo de ventas = costo de lo vendido (las compras de mercancía NO son gasto).
+- Utilidad operativa = ventas netas - costo de ventas - gastos operativos.
+- Intereses de créditos = gasto financiero -> Utilidad neta = operativa - intereses.
+- Desembolso de un crédito NO es ingreso ni utilidad; abono a capital NO es gasto.
+"""
+import datetime as dt
+
+from django.db.models import Count, F, Sum
+from django.db.models.functions import TruncDate
+from django.utils import timezone
+
+from negocios.utils import CERO, rango_fechas
+
+
+def _dias(desde, hasta):
+    d = desde
+    while d <= hasta:
+        yield d
+        d += dt.timedelta(days=1)
+
+
+def ventas_validas(negocio, desde, hasta):
+    from ventas.models import Venta
+    ini, fin = rango_fechas(desde, hasta)
+    return Venta.objects.filter(negocio=negocio, creado__gte=ini, creado__lt=fin).exclude(estado=Venta.Estado.ANULADA)
+
+
+def serie_diaria(negocio, desde, hasta):
+    """[{fecha, ventas, costo, gastos, utilidad_operativa, intereses, utilidad_neta, num_ventas}] por día."""
+    from creditos.models import PagoCredito
+    from gastos.models import Gasto
+
+    tz = timezone.get_current_timezone()
+    base = {d: {"ventas": CERO, "costo": CERO, "gastos": CERO, "intereses": CERO, "num_ventas": 0}
+            for d in _dias(desde, hasta)}
+
+    for f in (ventas_validas(negocio, desde, hasta).annotate(dia=TruncDate("creado", tzinfo=tz))
+              .values("dia").annotate(v=Sum("total"), c=Sum("costo_total"), n=Count("id"))):
+        base[f["dia"]].update(ventas=f["v"], costo=f["c"], num_ventas=f["n"])
+
+    for f in (Gasto.objects.filter(negocio=negocio, anulado=False, fecha__range=(desde, hasta))
+              .values("fecha").annotate(t=Sum("monto"))):
+        base[f["fecha"]]["gastos"] = f["t"]
+
+    for f in (PagoCredito.objects.filter(negocio=negocio, fecha__range=(desde, hasta))
+              .values("fecha").annotate(t=Sum("aplicado_interes"))):
+        base[f["fecha"]]["intereses"] = f["t"]
+
+    salida = []
+    for d, x in base.items():
+        operativa = x["ventas"] - x["costo"] - x["gastos"]
+        salida.append({"fecha": d, **x, "utilidad_operativa": operativa, "utilidad_neta": operativa - x["intereses"]})
+    return salida
+
+
+def resumen(negocio, desde, hasta):
+    from creditos.models import Credito, PagoCredito
+    from gastos.models import Compra, Gasto
+    from ventas.models import PagoVenta, Venta
+
+    ini, fin = rango_fechas(desde, hasta)
+    vs = ventas_validas(negocio, desde, hasta)
+    agg = vs.aggregate(bruto=Sum("subtotal"), desc=Sum("descuento"), neto=Sum("total"),
+                       costo=Sum("costo_total"), n=Count("id"), fiado=Sum("saldo_pendiente"))
+    neto, costo, n = agg["neto"] or CERO, agg["costo"] or CERO, agg["n"] or 0
+
+    gastos = (Gasto.objects.filter(negocio=negocio, anulado=False, fecha__range=(desde, hasta))
+              .aggregate(t=Sum("monto"))["t"] or CERO)
+    gastos_cat = list(Gasto.objects.filter(negocio=negocio, anulado=False, fecha__range=(desde, hasta))
+                      .values(categoria_nombre=F("categoria__nombre")).annotate(total=Sum("monto")).order_by("-total"))
+    compras = (Compra.objects.filter(negocio=negocio, fecha__range=(desde, hasta)).aggregate(t=Sum("total"))["t"] or CERO)
+
+    pagos_cred = PagoCredito.objects.filter(negocio=negocio, fecha__range=(desde, hasta))
+    pc = pagos_cred.aggregate(i=Sum("aplicado_interes"), c=Sum("aplicado_capital"))
+    intereses, capital_pagado = pc["i"] or CERO, pc["c"] or CERO
+    desembolsos = (Credito.objects.filter(negocio=negocio, fecha_desembolso__range=(desde, hasta))
+                   .aggregate(t=Sum("monto"))["t"] or CERO)
+
+    pagos = PagoVenta.objects.filter(negocio=negocio, creado__gte=ini, creado__lt=fin).exclude(venta__estado=Venta.Estado.ANULADA)
+    por_medio = {f["medio"]: f["t"] for f in pagos.values("medio").annotate(t=Sum("monto"))}
+    abonos = pagos.filter(es_abono=True).aggregate(t=Sum("monto"))["t"] or CERO
+    cartera = (Venta.objects.filter(negocio=negocio, estado=Venta.Estado.FIADO).aggregate(t=Sum("saldo_pendiente"))["t"] or CERO)
+
+    operativa = neto - costo - gastos
+    return {
+        "desde": desde, "hasta": hasta,
+        "ventas_brutas": agg["bruto"] or CERO,
+        "descuentos": agg["desc"] or CERO,
+        "ventas_netas": neto,
+        "num_ventas": n,
+        "ticket_promedio": round(neto / n, 0) if n else CERO,
+        "costo_ventas": costo,
+        "utilidad_bruta": neto - costo,
+        "margen_bruto_pct": round((neto - costo) / neto * 100, 1) if neto else CERO,
+        "gastos_operativos": gastos,
+        "gastos_por_categoria": gastos_cat,
+        "utilidad_operativa": operativa,
+        "intereses_creditos": intereses,
+        "utilidad_neta": operativa - intereses,
+        "dinero_recibido_por_medio": por_medio,
+        "fiado_otorgado_pendiente": agg["fiado"] or CERO,
+        "abonos_fiado_cobrados": abonos,
+        "cartera_total": cartera,
+        "compras_mercancia": compras,
+        "no_operativo": {
+            "desembolsos_credito": desembolsos,
+            "abonos_a_capital_credito": capital_pagado,
+            "nota": "Los desembolsos y abonos a capital mueven dinero pero no son utilidad ni gasto.",
+        },
+    }
+
+
+def utilidad_promedio_diaria(negocio, dias=30, hasta=None):
+    """
+    Promedio de utilidad operativa por día en los últimos N días, contando solo
+    desde la primera venta registrada (para no castigar negocios recién creados).
+    """
+    from ventas.models import Venta
+    hasta = hasta or timezone.localdate()
+    desde = hasta - dt.timedelta(days=dias - 1)
+    primera = Venta.objects.filter(negocio=negocio).order_by("creado").values_list("creado", flat=True).first()
+    if not primera:
+        return CERO, 0
+    desde = max(desde, timezone.localtime(primera).date())
+    serie = serie_diaria(negocio, desde, hasta)
+    total = sum((d["utilidad_operativa"] for d in serie), CERO)
+    return round(total / len(serie), 0), len(serie)

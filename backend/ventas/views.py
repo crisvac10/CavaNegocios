@@ -1,0 +1,217 @@
+from django.db.models import Q, Sum
+from django.http import HttpResponse
+from rest_framework import mixins, serializers, viewsets
+from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+
+from negocios.mixins import PERMISOS_TENANT, TenantMixin
+from negocios.permisos import AdminOSoloLectura, EsAdmin
+from negocios.utils import leer_rango, rango_fechas
+
+from . import servicios
+from .models import Cliente, DetalleVenta, PagoVenta, Venta
+
+
+# ---------- Serializers ----------
+
+class ClienteSerializer(serializers.ModelSerializer):
+    saldo_pendiente = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Cliente
+        fields = ["id", "nombre", "telefono", "documento", "notas", "cupo_fiado", "activo", "saldo_pendiente"]
+
+
+class DetalleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DetalleVenta
+        fields = ["producto", "nombre", "cantidad", "precio_unitario", "subtotal"]
+
+
+class PagoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PagoVenta
+        fields = ["medio", "monto", "es_abono", "creado"]
+
+
+class VentaSerializer(serializers.ModelSerializer):
+    detalles = DetalleSerializer(many=True, read_only=True)
+    pagos = PagoSerializer(many=True, read_only=True)
+    cliente_nombre = serializers.CharField(source="cliente.nombre", read_only=True, default=None)
+    usuario = serializers.CharField(source="usuario.username", read_only=True)
+    utilidad = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Venta
+        fields = ["id", "numero", "estado", "cliente", "cliente_nombre", "usuario", "subtotal", "descuento",
+                  "total", "saldo_pendiente", "efectivo_recibido", "cambio", "nota", "utilidad",
+                  "detalles", "pagos", "motivo_anulacion", "token_publico", "creado"]
+
+    def get_utilidad(self, v):
+        # El cajero no ve costos/utilidad
+        req = self.context.get("request")
+        return v.utilidad if req and req.user.rol == "ADMIN" else None
+
+
+class ItemEntrada(serializers.Serializer):
+    producto = serializers.IntegerField()
+    cantidad = serializers.DecimalField(max_digits=14, decimal_places=3, default=1)
+    precio = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
+
+
+class PagoEntrada(serializers.Serializer):
+    medio = serializers.CharField()
+    monto = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
+class VentaEntrada(serializers.Serializer):
+    items = ItemEntrada(many=True)
+    pagos = PagoEntrada(many=True, required=False, default=list)
+    descuento = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, default=0)
+    cliente = serializers.IntegerField(required=False, allow_null=True)
+    efectivo_recibido = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
+    nota = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+# ---------- Vistas ----------
+
+class ClienteViewSet(TenantMixin, viewsets.ModelViewSet):
+    """Clientes y fiados. Cajero puede crear clientes (para fiar en el POS)."""
+    queryset = Cliente.objects.all()
+    serializer_class = ClienteSerializer
+    modulo = "fiados"
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        q = self.request.query_params.get("q")
+        if q:
+            qs = qs.filter(Q(nombre__icontains=q) | Q(telefono__icontains=q) | Q(documento__icontains=q))
+        return qs
+
+    def get_permissions(self):
+        if self.action in ("destroy", "update", "partial_update"):
+            return [p() for p in PERMISOS_TENANT + [EsAdmin]]
+        return super().get_permissions()
+
+    def perform_destroy(self, c):
+        if c.ventas.exists():
+            c.activo = False
+            c.save(update_fields=["activo"])
+        else:
+            c.delete()
+
+    @action(detail=False)
+    def deudores(self, request):
+        """Cartera: clientes con saldo pendiente, de mayor a menor."""
+        filas = (Venta.objects.filter(negocio=self.negocio, estado=Venta.Estado.FIADO)
+                 .values("cliente_id", "cliente__nombre", "cliente__telefono")
+                 .annotate(saldo=Sum("saldo_pendiente")).order_by("-saldo"))
+        total = sum(f["saldo"] for f in filas)
+        return Response({"total_cartera": total, "clientes": [
+            {"id": f["cliente_id"], "nombre": f["cliente__nombre"], "telefono": f["cliente__telefono"], "saldo": f["saldo"]}
+            for f in filas]})
+
+    @action(detail=True, methods=["post"])
+    def abonar(self, request, pk=None):
+        res = servicios.abonar_fiado(self.negocio, request.user, self.get_object(),
+                                     request.data.get("monto"), request.data.get("medio", "EFECTIVO"))
+        return Response(res, status=201)
+
+    @action(detail=True)
+    def estado_cuenta(self, request, pk=None):
+        c = self.get_object()
+        ventas = c.ventas.exclude(estado=Venta.Estado.ANULADA).prefetch_related("detalles", "pagos")
+        return Response({"cliente": ClienteSerializer(c).data,
+                         "ventas": VentaSerializer(ventas, many=True, context={"request": request}).data})
+
+    @action(detail=True)
+    def recordatorio(self, request, pk=None):
+        c = self.get_object()
+        return Response({"saldo": c.saldo_pendiente,
+                         "whatsapp": servicios.whatsapp_recordatorio_fiado(c, self.negocio)})
+
+
+class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin,
+                   mixins.CreateModelMixin, viewsets.GenericViewSet):
+    """
+    POST /ventas/   {items:[{producto,cantidad,precio?}], pagos:[{medio,monto}], descuento, cliente, efectivo_recibido}
+    Las ventas no se editan: se anulan (admin) y quedan en el historial.
+    """
+    queryset = Venta.objects.select_related("cliente", "usuario").prefetch_related("detalles", "pagos")
+    serializer_class = VentaSerializer
+    modulo = "pos"
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        p = self.request.query_params
+        if p.get("desde") or p.get("hasta"):
+            ini, fin = rango_fechas(*leer_rango(self.request))
+            qs = qs.filter(creado__gte=ini, creado__lt=fin)
+        if p.get("estado"):
+            qs = qs.filter(estado=p["estado"])
+        if p.get("sesion"):
+            qs = qs.filter(sesion_caja_id=p["sesion"])
+        if p.get("numero"):
+            qs = qs.filter(numero=p["numero"])
+        return qs[:300] if self.action == "list" else qs
+
+    def create(self, request, *args, **kwargs):
+        e = VentaEntrada(data=request.data)
+        e.is_valid(raise_exception=True)
+        d = e.validated_data
+        cliente = None
+        if d.get("cliente"):
+            cliente = Cliente.objects.filter(negocio=self.negocio, pk=d["cliente"]).first()
+            if not cliente:
+                return Response({"cliente": "No existe."}, status=400)
+        venta = servicios.crear_venta(
+            self.negocio, request.user, d["items"], d.get("pagos"), d.get("descuento"),
+            cliente, d.get("efectivo_recibido"), d.get("nota", ""),
+        )
+        data = VentaSerializer(venta, context={"request": request}).data
+        data["whatsapp_recibo"] = servicios.whatsapp_recibo(venta)
+        return Response(data, status=201)
+
+    @action(detail=True, methods=["post"], permission_classes=PERMISOS_TENANT + [EsAdmin])
+    def anular(self, request, pk=None):
+        v = servicios.anular_venta(self.negocio, request.user, self.get_object(), request.data.get("motivo", ""))
+        return Response(VentaSerializer(v, context={"request": request}).data)
+
+    @action(detail=True)
+    def recibo(self, request, pk=None):
+        v = self.get_object()
+        return Response({
+            "texto": servicios.texto_recibo(v),
+            "link": servicios.link_recibo(v),
+            "whatsapp": servicios.whatsapp_recibo(v, request.query_params.get("telefono")),
+        })
+
+    @action(detail=True)
+    def ticket(self, request, pk=None):
+        """Texto plano para impresora térmica (58mm=32 col, 80mm=48 col). Lo consume el agente de impresión."""
+        ancho = 48 if request.query_params.get("ancho") == "80" else 32
+        return HttpResponse(servicios.texto_recibo(self.get_object(), ancho), content_type="text/plain; charset=utf-8")
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def recibo_publico(request, token):
+    """Recibo digital que abre el cliente desde el link de WhatsApp (sin login)."""
+    v = (Venta.objects.select_related("negocio", "cliente").prefetch_related("detalles", "pagos")
+         .filter(token_publico=token).first())
+    if not v:
+        return Response({"detail": "Recibo no encontrado."}, status=404)
+    n = v.negocio
+    return Response({
+        "negocio": {"nombre": n.nombre, "nit": n.nit, "direccion": n.direccion, "telefono": n.telefono,
+                    "logo_url": n.logo_url, "mensaje": n.mensaje_recibo},
+        "numero": v.numero, "fecha": v.creado, "estado": v.estado,
+        "cliente": v.cliente.nombre if v.cliente else None,
+        "detalles": DetalleSerializer(v.detalles.all(), many=True).data,
+        "subtotal": v.subtotal, "descuento": v.descuento, "total": v.total,
+        "pagos": PagoSerializer(v.pagos.filter(es_abono=False), many=True).data,
+        "cambio": v.cambio, "saldo_pendiente": v.saldo_pendiente,
+        "nota_legal": "Documento no fiscal. No reemplaza la factura electrónica.",
+    })
