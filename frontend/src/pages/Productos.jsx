@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import QRCode from "qrcode";
-import { Camera, Copy, Download, ExternalLink, ImageOff, PackagePlus, Plus, Search } from "lucide-react";
+import { Camera, Copy, Download, ExternalLink, ImageOff, PackagePlus, Plus, Search, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { numero, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
@@ -19,6 +19,8 @@ const AJUSTES = {
 /* ---------- Foto ---------- */
 function Foto({ url, onElegir, onQuitar }) {
   const input = useRef(null);
+  const [rota, setRota] = useState(false);
+  useEffect(() => setRota(false), [url]);
   return (
     <div className="flex items-center gap-4">
       <button
@@ -27,7 +29,11 @@ function Foto({ url, onElegir, onQuitar }) {
         className="grid h-28 w-28 shrink-0 place-items-center overflow-hidden rounded-xl border-2 border-dashed border-linea bg-fondo text-suave hover:border-tinta"
         aria-label="Elegir foto"
       >
-        {url ? <img src={url} alt="" className="h-full w-full object-cover" /> : <Camera size={28} aria-hidden />}
+        {url && !rota ? (
+          <img src={url} alt="" className="h-full w-full object-cover" onError={() => setRota(true)} />
+        ) : (
+          <Camera size={28} aria-hidden />
+        )}
       </button>
       <div className="space-y-2 text-sm">
         <button type="button" onClick={() => input.current?.click()} className="block font-semibold text-tinta underline">
@@ -36,7 +42,11 @@ function Foto({ url, onElegir, onQuitar }) {
         {url && (
           <button type="button" onClick={onQuitar} className="block text-suave hover:text-alerta">Quitar foto</button>
         )}
-        <p className="text-suave">Una foto cuadrada y con buena luz se ve mejor en el menú.</p>
+        {rota ? (
+          <p className="font-medium text-alerta">La foto guardada no carga. Súbela de nuevo.</p>
+        ) : (
+          <p className="text-suave">Una foto cuadrada y con buena luz se ve mejor en el menú.</p>
+        )}
       </div>
       <input
         ref={input}
@@ -88,6 +98,12 @@ function EditorProducto({ producto, categorias, onCerrar }) {
       }
       return p;
     },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["productos"] }); onCerrar(); },
+  });
+
+  const [confirmarBorrado, setConfirmarBorrado] = useState(false);
+  const eliminar = useMutation({
+    mutationFn: () => api(`/productos/${producto.id}/`, { method: "DELETE" }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["productos"] }); onCerrar(); },
   });
 
@@ -230,6 +246,42 @@ function EditorProducto({ producto, categorias, onCerrar }) {
               <PackagePlus size={18} aria-hidden /> Registrar ajuste
             </Boton>
           </form>
+        </section>
+      )}
+
+      {!nuevo && (
+        <section className="mt-6 border-t border-linea pt-5">
+          {!confirmarBorrado ? (
+            <button
+              type="button"
+              onClick={() => setConfirmarBorrado(true)}
+              className="inline-flex items-center gap-2 rounded-lg px-1 py-2 text-sm font-semibold text-alerta hover:underline"
+            >
+              <Trash2 size={17} aria-hidden /> Eliminar producto
+            </button>
+          ) : (
+            <div className="rounded-xl bg-alerta-claro p-4" role="alertdialog" aria-label="Confirmar eliminación">
+              <p className="font-semibold text-alerta">¿Eliminar {f.nombre}?</p>
+              <p className="mt-1 text-sm text-texto">
+                Sale del POS y del menú QR. Si ya tiene ventas, queda guardado como inactivo para no dañar tus reportes;
+                lo puedes recuperar en el filtro Inactivos.
+              </p>
+              {eliminar.error && <div className="mt-3"><Aviso>{eliminar.error.message}</Aviso></div>}
+              <div className="mt-3 flex gap-2">
+                <Boton type="button" variante="borde" className="flex-1 py-2.5" onClick={() => setConfirmarBorrado(false)}>
+                  Cancelar
+                </Boton>
+                <button
+                  type="button"
+                  onClick={() => eliminar.mutate()}
+                  disabled={eliminar.isPending}
+                  className="flex-1 rounded-lg bg-alerta py-2.5 font-semibold text-white hover:brightness-110 disabled:opacity-60"
+                >
+                  {eliminar.isPending ? "Eliminando…" : "Sí, eliminar"}
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       )}
     </Hoja>

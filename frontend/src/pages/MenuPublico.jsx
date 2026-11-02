@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { MapPin, Phone } from "lucide-react";
 import { api } from "../lib/api";
 import { pesos } from "../lib/formato";
+import { aplicarMarca } from "../lib/marca";
 
 /** Menú digital público (QR). Solo lectura: el pedido se hace en caja. */
 export default function MenuPublico() {
@@ -13,7 +14,7 @@ export default function MenuPublico() {
 
   useEffect(() => {
     api(`/public/menu/${slug}/`)
-      .then((m) => { setMenu(m); document.title = `Menú · ${m.negocio.nombre}`; })
+      .then((m) => { aplicarMarca(m.negocio); setMenu(m); document.title = `Menú · ${m.negocio.nombre}`; })
       .catch((e) => setError(e.estado === 404 ? "Este menú no está disponible." : e.message));
   }, [slug]);
 

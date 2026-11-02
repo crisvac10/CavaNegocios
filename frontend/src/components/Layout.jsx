@@ -23,9 +23,14 @@ const NAV = [
 function Navegacion({ items, pendientes, negocio, usuario, onSalir, onIr }) {
   return (
     <>
-      <div className="px-5 pb-6 pt-6">
-        <p className="font-display text-xl font-bold leading-tight">{negocio?.nombre}</p>
-        <p className="mt-1 text-sm text-white/60">{usuario?.nombre}</p>
+      <div className="flex items-center gap-3 px-5 pb-6 pt-6">
+        {negocio?.logo_url && (
+          <img src={negocio.logo_url} alt="" className="h-11 w-11 shrink-0 rounded-full bg-white object-cover" />
+        )}
+        <div className="min-w-0 pr-8 md:pr-0">
+          <p className="font-display text-xl font-bold leading-tight">{negocio?.nombre}</p>
+          <p className="mt-1 truncate text-sm text-white/60">{usuario?.nombre}</p>
+        </div>
       </div>
       <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-3" aria-label="Principal">
         {items.map(({ a, texto, Icono }) => (

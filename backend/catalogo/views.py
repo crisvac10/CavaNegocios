@@ -130,7 +130,8 @@ def menu_publico(request, slug):
         categorias.append({"id": None, "nombre": "Otros", "productos": sin_categoria})
     return Response({
         "negocio": {"nombre": n.nombre, "logo_url": n.logo_url or None, "direccion": n.direccion,
-                    "telefono": n.telefono, "tipo": n.get_tipo_display()},
+                    "telefono": n.telefono, "tipo": n.get_tipo_display(),
+                    "color_primario": n.color_primario, "color_acento": n.color_acento},
         "categorias": categorias,
         "nota": "Precios en pesos colombianos. Pide en caja.",
     })

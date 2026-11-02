@@ -45,7 +45,9 @@ class Negocio(models.Model):
     nit = models.CharField(max_length=30, blank=True)
     telefono = models.CharField(max_length=30, blank=True)
     direccion = models.CharField(max_length=200, blank=True)
-    logo_url = models.URLField(blank=True)
+    logo_url = models.URLField(max_length=500, blank=True)
+    color_primario = models.CharField(max_length=7, default="#16324F", help_text="Fondo de menús y botones (texto blanco encima)")
+    color_acento = models.CharField(max_length=7, default="#F4B400", help_text="Etiquetas de precio (texto del color primario encima)")
 
     # Configuración operativa
     modulos = models.JSONField(default=list, blank=True, help_text="Módulos activos. Vacío = todos.")

@@ -431,3 +431,59 @@ class FotosMenuPedidos(Base):
         self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}],
                                              "pagos": [{"medio": "EFECTIVO", "monto": 2000}]}, format="json"), 201)
         self.assertEqual(self.ok(self.c.get("/api/pedidos/")), [])
+
+
+class MarcaYAjustes(Base):
+    def test_colores_validan_contraste(self):
+        self.login("dueno")
+        ok = self.ok(self.c.patch("/api/mi-negocio/", {"color_primario": "#4a2c1d", "color_acento": "#E9B872"}, format="json"))
+        self.assertEqual((ok["color_primario"], ok["color_acento"]), ("#4A2C1D", "#E9B872"))
+        # Primario claro: el texto blanco no se leería
+        r = self.c.patch("/api/mi-negocio/", {"color_primario": "#F5F5F5"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("color_primario", r.json())
+        # Acento oscuro sobre primario oscuro: precios ilegibles
+        r = self.c.patch("/api/mi-negocio/", {"color_acento": "#333333"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("color_acento", r.json())
+        r = self.c.patch("/api/mi-negocio/", {"color_primario": "rojo"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        # El menú y el recibo públicos llevan la marca
+        m = self.ok(APIClient().get(f"/api/public/menu/{self.neg.slug}/"))
+        self.assertEqual(m["negocio"]["color_primario"], "#4A2C1D")
+        # El cajero no cambia ajustes ni logo
+        self.login("cajero")
+        self.assertEqual(self.c.patch("/api/mi-negocio/", {"nombre": "X"}, format="json").status_code, 403)
+        self.assertEqual(self.c.delete("/api/mi-negocio/logo/").status_code, 403)
+
+    def test_logo(self):
+        import io
+        import tempfile
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.test import override_settings
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (1200, 1200), (20, 50, 80)).save(buf, "PNG")
+        with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp, R2_BUCKET="", DEBUG=True):
+            self.login("dueno")
+            r = self.ok(self.c.post("/api/mi-negocio/logo/", {"logo": SimpleUploadedFile("l.png", buf.getvalue(), "image/png")},
+                                    format="multipart"))
+            self.assertIn("/marca/", r["logo_url"])
+            self.assertEqual(self.ok(self.c.delete("/api/mi-negocio/logo/"))["logo_url"], "")
+
+    def test_eliminar_producto(self):
+        self.login("dueno")
+        # Sin ventas: se borra
+        self.assertEqual(self.c.delete(f"/api/productos/{self.pan.id}/").status_code, 204)
+        self.assertFalse(Producto.objects.filter(pk=self.pan.pk).exists())
+        # Con ventas: queda inactivo (no aparece en el POS ni en el menú) para no romper el historial
+        self.abrir_caja()
+        self.stock(self.cafe, 5)
+        self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}],
+                                             "pagos": [{"medio": "EFECTIVO", "monto": 2000}]}, format="json"), 201)
+        self.assertEqual(self.c.delete(f"/api/productos/{self.cafe.id}/").status_code, 204)
+        self.cafe.refresh_from_db()
+        self.assertFalse(self.cafe.activo)
+        m = self.ok(APIClient().get(f"/api/public/menu/{self.neg.slug}/"))
+        self.assertEqual(m["categorias"], [])

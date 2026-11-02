@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, configurarSesion, token } from "../lib/api";
+import { aplicarMarca } from "../lib/marca";
 
 const Ctx = createContext(null);
 
@@ -30,8 +31,12 @@ export function SesionProvider({ children }) {
   };
 
   const refrescar = async () => setUsuario(await api("/yo/"));
+  /** Actualiza el negocio en la sesión sin pedir /yo/ de nuevo (tras guardar Ajustes). */
+  const actualizarNegocio = (n) => setUsuario((u) => (u ? { ...u, negocio: n } : u));
 
   const negocio = usuario?.negocio;
+  // Los colores del negocio se aplican a toda la app; sin sesión vuelve la marca CavaNegocios
+  useEffect(() => aplicarMarca(negocio), [negocio?.color_primario, negocio?.color_acento]); // eslint-disable-line
   const valor = {
     usuario,
     negocio,
@@ -39,6 +44,7 @@ export function SesionProvider({ children }) {
     entrar,
     salir,
     refrescar,
+    actualizarNegocio,
     esAdmin: usuario?.rol === "ADMIN",
     tieneModulo: (m) => Boolean(negocio?.modulos_activos?.includes(m)),
   };

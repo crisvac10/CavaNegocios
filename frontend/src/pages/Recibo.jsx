@@ -2,13 +2,16 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { MEDIOS, numero, pesos } from "../lib/formato";
+import { aplicarMarca } from "../lib/marca";
 
 /** Recibo digital público: lo abre el cliente desde el link de WhatsApp. */
 export default function Recibo() {
   const { token } = useParams();
   const [r, setR] = useState(null);
   const [error, setError] = useState("");
-  useEffect(() => { api(`/public/recibo/${token}/`).then(setR).catch((e) => setError(e.message)); }, [token]);
+  useEffect(() => {
+    api(`/public/recibo/${token}/`).then((x) => { aplicarMarca(x.negocio); setR(x); }).catch((e) => setError(e.message));
+  }, [token]);
 
   if (error) return <p className="p-10 text-center text-suave">{error}</p>;
   if (!r) return <p className="p-10 text-center text-suave">Cargando recibo…</p>;

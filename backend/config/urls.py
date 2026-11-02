@@ -41,6 +41,7 @@ urlpatterns = [
     path("api/logout/", u.logout),
     path("api/yo/", u.yo),
     path("api/mi-negocio/", u.MiNegocioView.as_view()),
+    path("api/mi-negocio/logo/", u.MiNegocioLogoView.as_view()),
     path("api/sistema/", u.catalogos_sistema),
     path("api/public/recibo/<uuid:token>/", recibo_publico),
     path("api/public/menu/<slug:slug>/", menu_publico),

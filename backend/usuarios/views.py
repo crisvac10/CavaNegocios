@@ -3,6 +3,7 @@ from rest_framework import serializers, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -21,10 +22,23 @@ class NegocioSerializer(serializers.ModelSerializer):
         model = Negocio
         fields = [
             "id", "nombre", "slug", "tipo", "plan", "nit", "telefono", "direccion", "logo_url",
+            "color_primario", "color_acento",
             "medios_pago", "usa_caja", "usa_cola_pedidos", "bloquear_sin_stock", "permitir_fiado", "mensaje_recibo",
             "modulos_activos", "medios_pago_activos", "activo",
         ]
-        read_only_fields = ["slug", "plan", "activo"]
+        read_only_fields = ["slug", "plan", "activo", "logo_url"]
+
+    def validate(self, data):
+        from negocios.colores import problemas
+        n = self.instance
+        primario = data.get("color_primario", n.color_primario if n else "#16324F").upper()
+        acento = data.get("color_acento", n.color_acento if n else "#F4B400").upper()
+        if "color_primario" in data or "color_acento" in data:
+            errores = problemas(primario, acento)
+            if errores:
+                raise serializers.ValidationError(errores)
+            data["color_primario"], data["color_acento"] = primario, acento
+        return data
 
     def validate_medios_pago(self, valor):
         validos = {m.value for m in MedioPago}
@@ -117,6 +131,32 @@ class MiNegocioView(APIView):
         s.is_valid(raise_exception=True)
         s.save()
         return Response(s.data)
+
+
+class MiNegocioLogoView(APIView):
+    """POST multipart {logo}: sube/reemplaza el logo. DELETE: lo quita. Solo admin."""
+    permission_classes = PERMISOS_TENANT + [EsAdmin]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from negocios import almacenamiento
+        n = request.user.negocio
+        archivo = request.FILES.get("logo")
+        if not archivo:
+            return Response({"logo": "Adjunta una imagen."}, status=400)
+        anterior = n.logo_url
+        n.logo_url = almacenamiento.subir_imagen(archivo, f"negocios/{n.id}/marca", request)
+        n.save(update_fields=["logo_url"])
+        almacenamiento.borrar(anterior)
+        return Response(NegocioSerializer(n).data)
+
+    def delete(self, request):
+        from negocios import almacenamiento
+        n = request.user.negocio
+        almacenamiento.borrar(n.logo_url)
+        n.logo_url = ""
+        n.save(update_fields=["logo_url"])
+        return Response(NegocioSerializer(n).data)
 
 
 class UsuariosNegocioViewSet(viewsets.ModelViewSet):

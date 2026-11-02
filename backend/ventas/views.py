@@ -257,7 +257,8 @@ def recibo_publico(request, token):
     n = v.negocio
     return Response({
         "negocio": {"nombre": n.nombre, "nit": n.nit, "direccion": n.direccion, "telefono": n.telefono,
-                    "logo_url": n.logo_url, "mensaje": n.mensaje_recibo},
+                    "logo_url": n.logo_url, "mensaje": n.mensaje_recibo,
+                    "color_primario": n.color_primario, "color_acento": n.color_acento},
         "numero": v.numero, "turno": v.turno, "fecha": v.creado, "estado": v.estado,
         "cliente": v.cliente.nombre if v.cliente else None,
         "detalles": DetalleSerializer(v.detalles.all(), many=True).data,
