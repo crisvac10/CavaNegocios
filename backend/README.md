@@ -17,9 +17,14 @@ python manage.py test tests      # 16 pruebas end-to-end
 
 ## Deploy en Railway
 
-1. Sube el repo, crea un servicio + plugin PostgreSQL (Railway inyecta `DATABASE_URL`).
-2. Variables: copia `.env.ejemplo` (`SECRET_KEY`, `DEBUG=False`, `ALLOWED_HOSTS`, `CORS_*`, `FRONTEND_URL`).
-3. El `Procfile` corre migraciones y gunicorn. Crea el Super Admin con `python manage.py createsuperuser` y ponle `rol=SUPERADMIN` desde `/admin`.
+El repo es un monorepo: el servicio del backend debe construir **solo esta carpeta**.
+
+1. Servicio → **Settings → Source → Root Directory = `backend`** (si no, Railpack ve solo `backend/` y `frontend/` y falla con "could not determine how to build the app").
+2. Agrega PostgreSQL al proyecto y en el servicio crea la variable `DATABASE_URL = ${{Postgres.DATABASE_URL}}`.
+3. Variables: copia `.env.ejemplo` (`SECRET_KEY`, `DEBUG=False`, `ALLOWED_HOSTS`, `CORS_*`, `FRONTEND_URL`, `R2_*`).
+4. Railpack detecta Python por `requirements.txt` y `.python-version`, y arranca con el `Procfile`: migra, recoge estáticos y levanta gunicorn.
+5. **Settings → Networking → Generate Domain**. Health check: `/api/health/`.
+6. Super Admin: `railway run python manage.py crear_demo` (demo + `cavatech`) o `createsuperuser` y luego `rol=SUPERADMIN` en `/admin`.
 
 ## Multi-tenant
 
