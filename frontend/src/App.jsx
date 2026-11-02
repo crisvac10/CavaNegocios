@@ -4,12 +4,15 @@ import Layout from "./components/Layout";
 import Login from "./pages/Login";
 import Vender from "./pages/Vender";
 import Hoy from "./pages/Hoy";
-import Proximamente from "./pages/Proximamente";
 import Recibo from "./pages/Recibo";
 import MenuPublico from "./pages/MenuPublico";
 import Pedidos from "./pages/Pedidos";
 import Productos from "./pages/Productos";
 import Ajustes from "./pages/Ajustes";
+import Fiados from "./pages/Fiados";
+import Gastos from "./pages/Gastos";
+import Reportes from "./pages/Reportes";
+import Creditos from "./pages/Creditos";
 
 function Cargando() {
   return (
@@ -47,10 +50,10 @@ export default function App() {
         <Route path="/hoy" element={<Hoy />} />
         <Route path="/pedidos" element={<Pedidos />} />
         <Route path="/productos" element={<Productos />} />
-        <Route path="/fiados" element={<Proximamente titulo="Fiados" />} />
-        <Route path="/gastos" element={<Proximamente titulo="Gastos y compras" />} />
-        <Route path="/reportes" element={<Proximamente titulo="Reportes" />} />
-        <Route path="/creditos" element={<Proximamente titulo="Créditos" />} />
+        <Route path="/fiados" element={<Fiados />} />
+        <Route path="/gastos" element={<Gastos />} />
+        <Route path="/reportes" element={esAdmin ? <Reportes /> : <Navigate to="/vender" replace />} />
+        <Route path="/creditos" element={esAdmin ? <Creditos /> : <Navigate to="/vender" replace />} />
         <Route path="/ajustes" element={esAdmin ? <Ajustes /> : <Navigate to="/vender" replace />} />
         <Route path="*" element={<Navigate to="/vender" replace />} />
       </Route>

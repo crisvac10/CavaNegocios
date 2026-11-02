@@ -64,3 +64,16 @@ export async function api(ruta, { method = "GET", body, query } = {}) {
   }
   return datos;
 }
+
+/** Descarga un archivo protegido (CSV de reportes) usando el token de la sesión. */
+export async function descargar(ruta, query, nombre) {
+  const url = new URL(BASE + ruta);
+  Object.entries(query || {}).forEach(([k, v]) => v !== undefined && v !== "" && url.searchParams.set(k, v));
+  const resp = await fetch(url, { headers: { Authorization: `Token ${token.leer()}` } });
+  if (!resp.ok) throw new ErrorApi("No se pudo descargar el archivo.", resp.status);
+  const enlace = document.createElement("a");
+  enlace.href = URL.createObjectURL(await resp.blob());
+  enlace.download = nombre;
+  enlace.click();
+  setTimeout(() => URL.revokeObjectURL(enlace.href), 1000);
+}

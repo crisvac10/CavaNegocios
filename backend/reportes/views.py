@@ -43,10 +43,12 @@ class ReportesViewSet(TenantMixin, viewsets.ViewSet):
         ventas = servicios.ventas_validas(self.negocio, desde, hasta)
         filas = (DetalleVenta.objects.filter(venta__in=ventas)
                  .values("producto_id", "nombre")
-                 .annotate(cantidad=Sum("cantidad"), vendido=Sum("subtotal"),
+                 .annotate(unidades=Sum("cantidad"), vendido=Sum("subtotal"),
                            costo=Sum(F("costo_unitario") * F("cantidad")), veces=Count("id"))
                  .order_by("-vendido")[:int(request.query_params.get("limite", 20))])
-        return Response([{**f, "utilidad": f["vendido"] - (f["costo"] or 0)} for f in filas])
+        return Response([{"producto_id": f["producto_id"], "nombre": f["nombre"], "cantidad": f["unidades"],
+                          "vendido": f["vendido"], "costo": f["costo"], "veces": f["veces"],
+                          "utilidad": f["vendido"] - (f["costo"] or 0)} for f in filas])
 
     @action(detail=False)
     def exportar(self, request):

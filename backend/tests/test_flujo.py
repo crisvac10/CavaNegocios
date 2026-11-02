@@ -151,6 +151,13 @@ class VentasCajaInventario(Base):
         self.assertEqual(res["gastos_operativos"], 3000)
         self.assertEqual(res["utilidad_operativa"], 1000)
         self.assertEqual(self.c.get("/api/reportes/exportar/?tipo=ventas").status_code, 200)
+        self.assertEqual(self.c.get("/api/reportes/exportar/?tipo=gastos").status_code, 200)
+        top = self.ok(self.c.get("/api/reportes/top-productos/"))
+        self.assertEqual(top[0]["nombre"], "Pan de bono")
+        self.assertEqual((top[0]["cantidad"], top[0]["vendido"], top[0]["utilidad"]), (2, 6000, 4000))
+        dias = self.ok(self.c.get("/api/reportes/diario/"))
+        self.assertEqual(len(dias), 30)
+        self.assertEqual(dias[-1]["ventas"], 6000)
 
         # Recibo público sin login
         venta = self.ok(self.c.get(f"/api/ventas/{f['id']}/"))

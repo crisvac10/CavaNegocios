@@ -59,6 +59,32 @@ class Command(BaseCommand):
             crear_venta(n, dueno, [{"producto": p1.id, "cantidad": 2}, {"producto": p2.id, "cantidad": 1}],
                         [{"medio": "EFECTIVO" if k % 3 else "NEQUI", "monto": total}], entregar_ya=True)
 
+        # Historial de 14 días para que reportes y créditos muestren tendencias
+        import random
+        from django.utils import timezone
+        from gastos.models import CategoriaGasto, CATEGORIAS_GASTO_DEFECTO, Gasto
+        from ventas.models import Cliente, Venta
+
+        rnd = random.Random(7)
+        ahora = timezone.now()
+        for dias in range(1, 14):
+            for _ in range(rnd.randint(14, 26)):
+                p1, p2 = rnd.choice(prods), rnd.choice(prods)
+                total = p1.precio * 2 + p2.precio
+                v = crear_venta(n, dueno, [{"producto": p1.id, "cantidad": 2}, {"producto": p2.id, "cantidad": 1}],
+                                [{"medio": rnd.choice(["EFECTIVO", "EFECTIVO", "NEQUI", "DAVIPLATA"]), "monto": total}],
+                                entregar_ya=True)
+                Venta.objects.filter(pk=v.pk).update(creado=ahora - dt.timedelta(days=dias, minutes=rnd.randint(0, 600)))
+        cats = {c.nombre: c for c in CategoriaGasto.objects.bulk_create(
+            [CategoriaGasto(negocio=n, nombre=x) for x in CATEGORIAS_GASTO_DEFECTO])}
+        for dias, cat, desc, monto in [(12, "Arriendo", "Arriendo del local", 900000), (9, "Servicios públicos", "Luz y agua", 180000),
+                                       (5, "Transporte", "Domicilios de insumos", 35000), (2, "Aseo", "Productos de aseo", 42000)]:
+            Gasto.objects.create(negocio=n, categoria=cats[cat], descripcion=desc, monto=monto, usuario=dueno,
+                                 fecha=hoy() - dt.timedelta(days=dias), pagado_de_caja=False)
+        marta = Cliente.objects.create(negocio=n, nombre="Doña Marta", telefono="3001234567")
+        crear_venta(n, dueno, [{"producto": prods[1].id, "cantidad": 3}, {"producto": prods[4].id, "cantidad": 2}],
+                    [], cliente=marta, entregar_ya=True)
+
         crear_credito(n, dueno, {
             "entidad": "Bancamía", "tipo_entidad": "BANCO", "destino": "EQUIPO", "descripcion": "Máquina espresso",
             "monto": 4_000_000, "tasa": 28, "tipo_tasa": "EA", "sistema": "FRANCES", "frecuencia": "MENSUAL",
