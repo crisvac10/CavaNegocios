@@ -351,7 +351,7 @@ class FotosMenuPedidos(Base):
 
         buf = io.BytesIO()
         Image.new("RGBA", (2000, 1500), (200, 120, 40, 255)).save(buf, "PNG")
-        with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp, R2_BUCKET=""):
+        with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp, R2_BUCKET="", DEBUG=True):
             self.login("dueno")
             r = self.c.post(f"/api/productos/{self.cafe.id}/foto/",
                             {"foto": SimpleUploadedFile("tinto.png", buf.getvalue(), "image/png")}, format="multipart")
@@ -370,6 +370,25 @@ class FotosMenuPedidos(Base):
         # El cajero no puede cambiar fotos
         self.login("cajero")
         self.assertEqual(self.c.delete(f"/api/productos/{self.cafe.id}/foto/").status_code, 403)
+
+    def test_foto_sin_r2_en_produccion_da_error_claro(self):
+        import io
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.test import override_settings
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (50, 50)).save(buf, "PNG")
+        self.login("dueno")
+        foto = lambda: {"foto": SimpleUploadedFile("a.png", buf.getvalue(), "image/png")}
+        with override_settings(DEBUG=False, R2_BUCKET="", R2_PUBLIC_URL=""):
+            r = self.c.post(f"/api/productos/{self.cafe.id}/foto/", foto(), format="multipart")
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("R2", r.content.decode())
+        with override_settings(R2_BUCKET="b", R2_PUBLIC_URL="https://abc.r2.cloudflarestorage.com/b"):
+            r = self.c.post(f"/api/productos/{self.cafe.id}/foto/", foto(), format="multipart")
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("pública", r.content.decode())
 
     def test_menu_publico(self):
         Producto.objects.filter(pk=self.pan.pk).update(en_menu=False)
