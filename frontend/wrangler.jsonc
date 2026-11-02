@@ -1,0 +1,12 @@
+// Despliegue del frontend como Cloudflare Worker con archivos estáticos.
+// not_found_handling = SPA: cualquier ruta (/vender, /m/<negocio>, /r/<recibo>) sirve index.html.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cavanegocios",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
