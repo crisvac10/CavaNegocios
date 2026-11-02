@@ -59,8 +59,22 @@ def usa_r2():
     return bool(getattr(settings, "R2_BUCKET", "") and getattr(settings, "R2_PUBLIC_URL", ""))
 
 
+def revisar_configuracion():
+    """En producción las fotos solo pueden ir a R2: el disco de Railway se borra en cada deploy."""
+    if usa_r2():
+        if "r2.cloudflarestorage.com" in settings.R2_PUBLIC_URL:
+            raise ValidationError(
+                "R2_PUBLIC_URL tiene el endpoint privado de R2. Usa la URL pública del bucket "
+                "(https://pub-xxxx.r2.dev o tu dominio propio).")
+        return
+    if not settings.DEBUG:
+        raise ValidationError(
+            "Las fotos no están configuradas en el servidor: faltan las variables R2_* en Railway.")
+
+
 def subir_imagen(archivo, carpeta, request):
     """Procesa y sube la imagen. Devuelve la URL pública."""
+    revisar_configuracion()
     datos = procesar_imagen(archivo)
     clave = f"{carpeta.strip('/')}/{uuid.uuid4().hex[:12]}.webp"
     if usa_r2():
