@@ -494,3 +494,66 @@ class MarcaYAjustes(Base):
         self.assertFalse(self.cafe.activo)
         m = self.ok(APIClient().get(f"/api/public/menu/{self.neg.slug}/"))
         self.assertEqual(m["categorias"], [])
+
+
+class BorrarNegocio(Base):
+    def test_borra_todo_lo_del_negocio_y_nada_mas(self):
+        import io
+        import tempfile
+        from pathlib import Path
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.test import override_settings
+        from PIL import Image
+        from negocios.borrado import borrar_negocio
+        from ventas.models import Cliente, Venta
+
+        buf = io.BytesIO()
+        Image.new("RGB", (60, 60)).save(buf, "PNG")
+        with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp, R2_BUCKET="", DEBUG=True):
+            self.login("dueno")
+            self.ok(self.c.post(f"/api/productos/{self.cafe.id}/foto/", {"foto": SimpleUploadedFile("a.png", buf.getvalue(), "image/png")}, format="multipart"))
+            self.abrir_caja()
+            self.stock(self.cafe, 10)
+            cli = self.ok(self.c.post("/api/clientes/", {"nombre": "Ana"}, format="json"), 201)
+            self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}], "cliente": cli["id"]}, format="json"), 201)
+            self.ok(self.c.post("/api/creditos/", {"entidad": "Banco", "monto": 500000, "tasa": 20, "num_cuotas": 3,
+                    "fecha_desembolso": str(hoy()), "fecha_primera_cuota": str(hoy() + dt.timedelta(days=30))}, format="json"), 201)
+            cats = self.ok(self.c.get("/api/categorias-gasto/"))
+            self.ok(self.c.post("/api/gastos/", {"categoria": cats[0]["id"], "descripcion": "x", "monto": 100}, format="json"), 201)
+            # El otro negocio también tiene datos y no debe tocarse
+            Producto.objects.create(negocio=self.otro, nombre="Arroz", precio=4000)
+            carpeta = Path(tmp) / f"negocios/{self.neg.id}"
+            self.assertTrue(any(carpeta.rglob("*.webp")))
+
+            with self.captureOnCommitCallbacks(execute=True):
+                detalle = borrar_negocio(self.neg)
+            self.assertIn("ventas", dict(detalle))
+            self.assertFalse(Negocio.objects.filter(pk=self.neg.pk).exists())
+            self.assertFalse(Usuario.objects.filter(username__in=["dueno", "cajero"]).exists())
+            self.assertEqual(Venta.objects.count(), 0)
+            self.assertEqual(Cliente.objects.count(), 0)
+            self.assertFalse(carpeta.exists())
+            self.assertTrue(Negocio.objects.filter(pk=self.otro.pk).exists())
+            self.assertEqual(Producto.objects.filter(negocio=self.otro).count(), 1)
+            self.assertTrue(Usuario.objects.filter(username="luis").exists())
+
+    def test_admin_borra_con_confirmacion(self):
+        from django.test import override_settings
+        self.login("dueno")
+        self.abrir_caja()
+        self.stock(self.cafe, 5)
+        self.ok(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}], "pagos": [{"medio": "EFECTIVO", "monto": 2000}]}, format="json"), 201)
+        from django.test import Client
+        self.sa.is_staff = self.sa.is_superuser = True  # como lo crea asegurar_superadmin
+        self.sa.save()
+        web = Client()
+        web.force_login(self.sa)
+        estaticos = {"default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+                     "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+        with override_settings(ALLOWED_HOSTS=["testserver"], STORAGES=estaticos):
+            r = web.get(f"/admin/negocios/negocio/{self.neg.id}/delete/")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("1 ventas", r.content.decode())
+            r = web.post(f"/admin/negocios/negocio/{self.neg.id}/delete/", {"post": "yes"})
+            self.assertEqual(r.status_code, 302)
+        self.assertFalse(Negocio.objects.filter(pk=self.neg.pk).exists())
