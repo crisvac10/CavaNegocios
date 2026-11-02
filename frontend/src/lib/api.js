@@ -18,7 +18,15 @@ export class ErrorApi extends Error {
 /** Convierte las respuestas de error de DRF en una frase legible. */
 function mensajeDeError(datos, estado) {
   if (!datos) return estado >= 500 ? "El servidor tuvo un problema. Intenta de nuevo." : "No se pudo completar la acción.";
-  if (typeof datos === "string") return datos;
+  if (typeof datos === "string") {
+    // Una página HTML en vez de JSON = la URL de la API está mal configurada (VITE_API_URL)
+    if (/<html|<!doctype/i.test(datos)) {
+      return estado === 404
+        ? `No se encontró la API en ${BASE}. Revisa que VITE_API_URL termine en /api.`
+        : "El servidor respondió algo inesperado. Intenta de nuevo en un momento.";
+    }
+    return datos;
+  }
   if (Array.isArray(datos)) return datos.join(" ");
   if (datos.detail) return datos.detail;
   return Object.entries(datos)
