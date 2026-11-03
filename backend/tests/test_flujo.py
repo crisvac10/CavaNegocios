@@ -557,3 +557,59 @@ class BorrarNegocio(Base):
             r = web.post(f"/admin/negocios/negocio/{self.neg.id}/delete/", {"post": "yes"})
             self.assertEqual(r.status_code, 302)
         self.assertFalse(Negocio.objects.filter(pk=self.neg.pk).exists())
+
+
+class AportesExtra(Base):
+    def crear(self, **extra):
+        datos = {"entidad": "Bancamía", "monto": 6_000_000, "tasa": 30, "num_cuotas": 12,
+                 "fecha_desembolso": str(hoy()), "fecha_primera_cuota": str(hoy() + dt.timedelta(days=30))}
+        datos.update(extra)
+        return self.ok(self.c.post("/api/creditos/", datos, format="json"), 201)
+
+    def test_pagar_de_mas_va_a_capital(self):
+        self.login("dueno")
+        cr = self.crear()
+        cuota = Decimal(str(cr["cuota_valor"]))
+        r = self.ok(self.c.post(f"/api/creditos/{cr['id']}/pagar/", {"monto": str(cuota + 300000), "origen_fondos": "EXTERNO"}, format="json"), 201)
+        ex = r["excedente"]
+        self.assertEqual(Decimal(str(ex["cuota"])), cuota)
+        self.assertEqual(Decimal(str(ex["a_capital"])), 300000)
+        self.assertGreater(Decimal(str(ex["intereses_ahorrados"])), 0)
+        det = self.ok(self.c.get(f"/api/creditos/{cr['id']}/"))
+        self.assertEqual(det["resumen"]["aportado_extra"], 300000)
+        self.assertGreater(det["resumen"]["intereses_ahorrados_por_aportes"], 0)
+        # Todo cuadra: capital pagado + capital en cuotas = monto
+        capital = sum(Decimal(str(q["capital"])) for q in det["cuotas"])
+        self.assertEqual(capital + Decimal(300000), 6_000_000)
+        # Adelantar en vez de capital: no hay abono
+        r = self.ok(self.c.post(f"/api/creditos/{cr['id']}/pagar/", {"monto": str(cuota * 2), "origen_fondos": "EXTERNO",
+                                                                   "excedente": "ADELANTAR"}, format="json"), 201)
+        self.assertIsNone(r["excedente"])
+
+    def test_pagar_todo_liquida_sin_intereses_futuros(self):
+        self.login("dueno")
+        cr = self.crear()
+        det = self.ok(self.c.get(f"/api/creditos/{cr['id']}/"))
+        con_intereses = Decimal(str(det["resumen"]["deuda_pendiente_cuotas"]))
+        r = self.ok(self.c.post(f"/api/creditos/{cr['id']}/pagar/", {"monto": str(con_intereses), "origen_fondos": "EXTERNO"}, format="json"), 201)
+        self.assertTrue(r["excedente"]["liquidado"])
+        self.assertGreater(Decimal(str(r["excedente"]["no_cobrado"])), 0)  # intereses futuros que no se cobran
+        self.assertEqual(Credito.objects.get(pk=cr["id"]).estado, "PAGADO")
+
+    def test_aporte_fijo_suma_a_la_meta_y_proyecta(self):
+        self.login("dueno")
+        cr = self.crear()
+        base = self.ok(self.c.get("/api/creditos/tablero/"))["meta_dia"]
+        det = self.ok(self.c.post(f"/api/creditos/{cr['id']}/aporte/", {"aporte_extra": 200000, "estrategia": "REDUCIR_PLAZO"}, format="json"))
+        self.assertEqual(det["aporte_extra"], 200000)
+        pro = det["resumen"]["proyeccion_con_aporte"]
+        self.assertGreater(pro["periodos_menos"], 0)
+        self.assertGreater(pro["intereses_ahorrados"], 0)
+        meta = self.ok(self.c.get("/api/creditos/tablero/"))["meta_dia"]
+        self.assertEqual(meta["cuota_obligatoria_dia"], base["cuota_obligatoria_dia"])
+        self.assertEqual(meta["aporte_extra_dia"], round(200000 * 12 / 365))
+        self.assertEqual(meta["apartar_hoy"], meta["cuota_obligatoria_dia"] + meta["aporte_extra_dia"])
+        # Interés plano no acepta aporte
+        plano = self.crear(entidad="Don Pedro", sistema="PLANO", tasa=10, tipo_tasa="MENSUAL", frecuencia="DIARIA", num_cuotas=30, monto=300000)
+        r = self.c.post(f"/api/creditos/{plano['id']}/aporte/", {"aporte_extra": 1000}, format="json")
+        self.assertEqual(r.status_code, 400)

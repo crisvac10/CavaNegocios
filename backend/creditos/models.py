@@ -68,6 +68,12 @@ class Credito(TenantModel):
     tasa_ea_real = models.DecimalField(max_digits=10, decimal_places=4, default=0,
                                        help_text="Costo real E.A. en % (TIR). En interés plano es mayor que la tasa anunciada.")
 
+    # Aporte voluntario: lo que el negocio decide poner DE MÁS en cada cuota (va a capital)
+    aporte_extra = models.DecimalField(max_digits=14, decimal_places=2, default=0,
+                                       help_text="Extra fijo que se aporta a capital en cada cuota")
+    aporte_estrategia = models.CharField(max_length=14, default=C.REDUCIR_PLAZO,
+                                         choices=[(C.REDUCIR_PLAZO, "Terminar antes"), (C.REDUCIR_CUOTA, "Bajar la cuota")])
+
     desembolso_a_caja = models.BooleanField(default=False, help_text="Si el dinero entró a la caja (no al banco)")
     medio_desembolso = models.CharField(max_length=15, choices=MedioPago.choices, default=MedioPago.TRANSFERENCIA)
     estado = models.CharField(max_length=10, choices=Estado.choices, default=Estado.ACTIVO)
@@ -99,8 +105,17 @@ class Credito(TenantModel):
 
     @property
     def cuota_diaria_equivalente(self):
-        """Cuánto hay que 'apartar' cada día para llegar a la cuota."""
+        """Cuánto hay que 'apartar' cada día para llegar a la cuota (lo obligatorio)."""
         return self.cuota_valor * C.PERIODOS_ANIO[self.frecuencia] / 365
+
+    @property
+    def aporte_diario_equivalente(self):
+        """Lo voluntario: el aporte extra fijo llevado a valor diario."""
+        return self.aporte_extra * C.PERIODOS_ANIO[self.frecuencia] / 365
+
+    @property
+    def aportado_extra(self):
+        return self.pagos.filter(tipo=PagoCredito.Tipo.ABONO_CAPITAL).aggregate(s=Sum("monto"))["s"] or CERO
 
 
 class CuotaCredito(models.Model):

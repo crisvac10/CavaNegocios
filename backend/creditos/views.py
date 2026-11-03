@@ -36,7 +36,8 @@ class CreditoSerializer(serializers.ModelSerializer):
         model = Credito
         fields = ["id", "entidad", "tipo_entidad", "destino", "descripcion", "monto", "tasa", "tipo_tasa",
                   "sistema", "modalidad", "frecuencia", "num_cuotas", "fecha_desembolso", "fecha_primera_cuota",
-                  "cuota_valor", "tasa_ea_real", "desembolso_a_caja", "medio_desembolso", "estado", "notas", "creado"]
+                  "cuota_valor", "tasa_ea_real", "aporte_extra", "aporte_estrategia",
+                  "desembolso_a_caja", "medio_desembolso", "estado", "notas", "creado"]
         read_only_fields = ["cuota_valor", "tasa_ea_real", "estado"]
 
 
@@ -68,6 +69,11 @@ class PagoEntrada(serializers.Serializer):
     origen_fondos = serializers.ChoiceField(choices=PagoCredito.OrigenFondos.choices, default="CAJA")
     fecha = serializers.DateField(required=False)
     nota = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class PagoConExcedente(PagoEntrada):
+    excedente = serializers.ChoiceField(choices=["CAPITAL", "ADELANTAR"], default="CAPITAL")
+    estrategia = serializers.ChoiceField(choices=[C.REDUCIR_PLAZO, C.REDUCIR_CUOTA], required=False)
 
 
 class AbonoEntrada(PagoEntrada):
@@ -154,10 +160,20 @@ class CreditoViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMix
 
     @action(detail=True, methods=["post"])
     def pagar(self, request, pk=None):
-        e = PagoEntrada(data=request.data)
+        """Pago de cuota; si trae plata de más, el excedente va a capital (o adelanta cuotas)."""
+        e = PagoConExcedente(data=request.data)
         e.is_valid(raise_exception=True)
-        pago = S.pagar_cuotas(self.get_object(), usuario=request.user, **e.validated_data)
-        return Response(PagoCreditoSerializer(pago).data, status=201)
+        pago, efecto = S.pagar(self.get_object(), usuario=request.user, **e.validated_data)
+        data = PagoCreditoSerializer(pago).data
+        data["excedente"] = efecto
+        return Response(data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def aporte(self, request, pk=None):
+        """Configura el aporte extra fijo por cuota: {aporte_extra, estrategia}."""
+        cr = S.configurar_aporte(self.get_object(), request.data.get("aporte_extra", 0),
+                                 request.data.get("estrategia", C.REDUCIR_PLAZO))
+        return Response(CreditoDetalleSerializer(cr, context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["post"], url_path="abonar-capital")
     def abonar_capital(self, request, pk=None):

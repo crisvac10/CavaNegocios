@@ -215,57 +215,109 @@ function NuevoCredito({ onCerrar, onCreado }) {
 }
 
 /* ---------- Detalle ---------- */
-function Pagar({ cr, onListo }) {
+const ESTRATEGIAS = [
+  ["REDUCIR_PLAZO", "Terminar antes", "Misma cuota, menos cuotas. Ahorras más intereses."],
+  ["REDUCIR_CUOTA", "Bajar la cuota", "Mismo plazo, cuota más baja. Más aire en la caja."],
+];
+
+function ElegirEstrategia({ valor, onCambio, extra }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {[...ESTRATEGIAS, ...(extra || [])].map(([v, t, d]) => (
+        <label key={v} className={`cursor-pointer rounded-lg border-2 bg-papel p-3 ${valor === v ? "border-tinta" : "border-linea"}`}>
+          <input type="radio" className="sr-only" checked={valor === v} onChange={() => onCambio(v)} />
+          <span className="block font-semibold">{t}</span>
+          <span className="block text-sm text-suave">{d}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function mensajeExcedente(ex) {
+  if (ex.liquidado) {
+    return `¡Crédito pagado!${Number(ex.no_cobrado) > 0 ? ` No se cobraron ${pesos(ex.no_cobrado)} de intereses futuros.` : ""}`;
+  }
+  const antes = Number(ex.antes?.cuota), despues = Number(ex.despues?.cuota);
+  const efecto = ex.cuotas_menos > 0
+    ? `${ex.cuotas_menos} cuota(s) menos`
+    : despues < antes
+      ? `tu cuota baja a ${pesos(despues)}`
+      : "la última cuota queda más pequeña";
+  return `${Number(ex.cuota) ? `Cuota de ${pesos(ex.cuota)} pagada y ` : ""}${pesos(ex.a_capital)} a capital: ${efecto}. Te ahorras ${pesos(ex.intereses_ahorrados)} en intereses.`;
+}
+
+function Pagar({ cr }) {
   const qc = useQueryClient();
-  const prox = cr.resumen.proxima_cuota;
+  const r = cr.resumen;
+  const toca = Number(r.lo_que_toca || 0);
+  const aporte = Number(cr.aporte_extra || 0);
+  const plano = cr.sistema === "PLANO";
   const [tipo, setTipo] = useState("cuota");
-  const [monto, setMonto] = useState(Number(prox?.valor || 0));
+  const [monto, setMonto] = useState(toca + aporte);
   const [origen, setOrigen] = useState("CAJA");
   const [medio, setMedio] = useState("EFECTIVO");
-  const [estrategia, setEstrategia] = useState("REDUCIR_PLAZO");
-  const [efecto, setEfecto] = useState(null);
+  const [destino, setDestino] = useState(cr.aporte_estrategia || "REDUCIR_PLAZO"); // o ADELANTAR
+  const [ok, setOk] = useState("");
+  const deMas = tipo === "cuota" ? Math.max(0, monto - toca) : monto;
+
   const m = useMutation({
     mutationFn: () => tipo === "cuota"
-      ? api(`/creditos/${cr.id}/pagar/`, { method: "POST", body: { monto, origen_fondos: origen, medio } })
-      : api(`/creditos/${cr.id}/abonar-capital/`, { method: "POST", body: { monto, origen_fondos: origen, medio, estrategia } }),
-    onSuccess: (r) => {
-      setEfecto(r.efecto || null);
+      ? api(`/creditos/${cr.id}/pagar/`, {
+          method: "POST",
+          body: { monto, origen_fondos: origen, medio, excedente: destino === "ADELANTAR" || plano ? "ADELANTAR" : "CAPITAL", ...(destino !== "ADELANTAR" && !plano ? { estrategia: destino } : {}) },
+        })
+      : api(`/creditos/${cr.id}/abonar-capital/`, { method: "POST", body: { monto, origen_fondos: origen, medio, estrategia: destino === "ADELANTAR" ? "REDUCIR_PLAZO" : destino } }),
+    onSuccess: (x) => {
+      if (tipo === "cuota") setOk(x.excedente ? mensajeExcedente(x.excedente) : "Pago registrado.");
+      else setOk(mensajeExcedente({ cuota: 0, a_capital: monto, ...x.efecto }));
       setMonto(0);
-      qc.invalidateQueries({ queryKey: ["creditos"] });
-      qc.invalidateQueries({ queryKey: ["caja"] });
-      qc.invalidateQueries({ queryKey: ["reportes"] });
-      onListo?.();
+      ["creditos", "caja", "reportes"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
     },
   });
-  const plano = cr.sistema === "PLANO";
+
   return (
     <section className="rounded-xl bg-fondo p-4">
       <div className="grid grid-cols-2 rounded-lg bg-papel p-1 text-sm font-semibold" role="tablist">
-        {[["cuota", "Pagar cuota"], ["abono", "Abono extra a capital"]].map(([v, t]) => (
+        {[["cuota", "Pagar cuota"], ["abono", "Aporte extra"]].map(([v, t]) => (
           <button key={v} type="button" role="tab" aria-selected={tipo === v} disabled={v === "abono" && plano}
-            onClick={() => { setTipo(v); setEfecto(null); setMonto(v === "cuota" ? Number(prox?.valor || 0) : 0); }}
+            onClick={() => { setTipo(v); setOk(""); setMonto(v === "cuota" ? toca + aporte : 0); if (destino === "ADELANTAR" && v === "abono") setDestino("REDUCIR_PLAZO"); }}
             className={`rounded-md py-2 disabled:opacity-40 ${tipo === v ? "bg-tinta text-white" : "text-suave"}`}>{t}</button>
         ))}
       </div>
-      {plano && <p className="mt-2 text-xs text-suave">En interés plano el interés no baja con abonos extra: adelanta cuotas y negocia el descuento con el prestamista.</p>}
+      {plano && <p className="mt-2 text-xs text-suave">En interés plano el interés no baja con aportes extra: lo de más adelanta cuotas. Negocia el descuento con el prestamista.</p>}
+      {tipo === "abono" && <p className="mt-2 text-sm text-suave">Plata de más que pones cuando quieras (una prima, un buen mes). Va directo a capital.</p>}
+
       <div className="mt-3 space-y-3">
-        <InputPesos valor={monto} onCambio={setMonto} aria-label="Monto" />
-        {tipo === "cuota" && prox && (
-          <button type="button" onClick={() => setMonto(Number(prox.valor))} className="rounded-full border border-linea bg-papel px-3 py-1.5 text-sm font-semibold">
-            Cuota {prox.numero}: {pesos(prox.valor)}
-          </button>
-        )}
-        {tipo === "abono" && (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {[["REDUCIR_PLAZO", "Terminar antes", "Misma cuota, menos cuotas. Ahorra más intereses."], ["REDUCIR_CUOTA", "Pagar menos cada vez", "Mismo plazo, cuota más baja. Más aire en la caja."]].map(([v, t, d]) => (
-              <label key={v} className={`cursor-pointer rounded-lg border-2 bg-papel p-3 ${estrategia === v ? "border-tinta" : "border-linea"}`}>
-                <input type="radio" className="sr-only" checked={estrategia === v} onChange={() => setEstrategia(v)} />
-                <span className="block font-semibold">{t}</span>
-                <span className="block text-sm text-suave">{d}</span>
-              </label>
-            ))}
+        <InputPesos valor={monto} onCambio={(v) => { setMonto(v); setOk(""); }} aria-label="Monto" />
+        {tipo === "cuota" && toca > 0 && (
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => setMonto(toca)} className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${monto === toca ? "border-tinta bg-tinta text-white" : "border-linea bg-papel"}`}>
+              Solo la cuota: {pesos(toca)}
+            </button>
+            {aporte > 0 && (
+              <button type="button" onClick={() => setMonto(toca + aporte)} className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${monto === toca + aporte ? "border-tinta bg-tinta text-white" : "border-linea bg-papel"}`}>
+                Cuota + mi aporte: {pesos(toca + aporte)}
+              </button>
+            )}
           </div>
         )}
+
+        {deMas > 0 && !plano && (
+          <div className="space-y-2">
+            {tipo === "cuota" && (
+              <p className="rounded-lg bg-papel px-3 py-2.5 text-sm">
+                Pagas <strong className="num">{pesos(toca)}</strong> de la cuota y te sobran <strong className="num">{pesos(deMas)}</strong>. ¿Qué hacemos con lo de más?
+              </p>
+            )}
+            <ElegirEstrategia
+              valor={destino}
+              onCambio={setDestino}
+              extra={tipo === "cuota" ? [["ADELANTAR", "Adelantar cuotas", "Deja pagadas las próximas cuotas. No ahorra intereses."]] : null}
+            />
+          </div>
+        )}
+
         <div className="grid gap-2 sm:grid-cols-2">
           <select value={origen} onChange={(e) => setOrigen(e.target.value)} className={campo} aria-label="De dónde sale la plata">
             {Object.entries(ORIGEN).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
@@ -275,30 +327,93 @@ function Pagar({ cr, onListo }) {
           </select>
         </div>
         {m.error && <Aviso>{m.error.message}</Aviso>}
-        {m.isSuccess && !efecto && <Aviso tipo="ok">Pago registrado.</Aviso>}
-        {efecto && (
-          <Aviso tipo="ok">
-            Abono registrado: {efecto.cuotas_menos > 0 ? `${efecto.cuotas_menos} cuota(s) menos` : `cuota nueva de ${pesos(efecto.despues.cuota)}`} y te ahorras {pesos(efecto.intereses_ahorrados)} en intereses.
-          </Aviso>
-        )}
+        {ok && <Aviso tipo="ok">{ok}</Aviso>}
         <Boton variante="ok" className="w-full" disabled={!monto || m.isPending} onClick={() => m.mutate()}>
-          {m.isPending ? "Registrando…" : tipo === "cuota" ? `Registrar pago de ${pesos(monto)}` : `Abonar ${pesos(monto)} a capital`}
+          {m.isPending ? "Registrando…" : tipo === "cuota" ? `Registrar pago de ${pesos(monto)}` : `Aportar ${pesos(monto)} a capital`}
         </Boton>
       </div>
     </section>
   );
 }
 
+/* ---------- Aporte fijo: "cada mes pongo $X de más" ---------- */
+function AporteFijo({ cr }) {
+  const qc = useQueryClient();
+  const actual = Number(cr.aporte_extra || 0);
+  const [valor, setValor] = useState(actual);
+  const [estrategia, setEstrategia] = useState(cr.aporte_estrategia || "REDUCIR_PLAZO");
+  const [deb, setDeb] = useState(valor);
+  useEffect(() => { const t = setTimeout(() => setDeb(valor), 400); return () => clearTimeout(t); }, [valor]);
+  const sim = useQuery({
+    queryKey: ["creditos", "sim-aporte", cr.id, deb, cr.cuota_valor, cr.resumen.cuotas_restantes],
+    queryFn: () => api(`/creditos/${cr.id}/simular/`, { method: "POST", body: { abono_extra_periodico: deb } }),
+    enabled: deb > 0,
+  });
+  const guardar = useMutation({
+    mutationFn: (v) => api(`/creditos/${cr.id}/aporte/`, { method: "POST", body: { aporte_extra: v, estrategia } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["creditos"] }),
+  });
+  const cambio = valor !== actual || estrategia !== (cr.aporte_estrategia || "REDUCIR_PLAZO");
+  const s = sim.data;
+  const porCuota = POR_FREC[cr.frecuencia];
+  const r = cr.resumen;
+
+  return (
+    <section className="rounded-xl border border-linea p-4">
+      <h3 className="flex items-center gap-2 font-display text-lg font-bold text-tinta"><PiggyBank size={20} aria-hidden /> Tu aporte fijo</h3>
+      <p className="mt-1 text-sm text-suave">
+        ¿Pones plata de más cada {porCuota}? Guárdalo aquí: se suma a lo que apartas cada día y al pagar la cuota te lo propone de una.
+      </p>
+      {(Number(r.aportado_extra) > 0) && (
+        <p className="mt-3 rounded-lg bg-ok-claro px-3 py-2.5 text-sm text-ok">
+          Llevas <strong className="num">{pesos(r.aportado_extra)}</strong> aportados de más y te has ahorrado <strong className="num">{pesos(r.intereses_ahorrados_por_aportes)}</strong> en intereses.
+        </p>
+      )}
+      <label className="mt-3 flex flex-wrap items-center gap-3 text-sm font-semibold">
+        De más cada {porCuota}
+        <InputPesos className="w-44" valor={valor} onCambio={setValor} aria-label="Aporte fijo por cuota" />
+        {[50000, 100000, 200000].map((v) => (
+          <button key={v} type="button" onClick={() => setValor(v)} className="rounded-full border border-linea px-3 py-1.5 text-xs font-semibold">+{pesos(v)}</button>
+        ))}
+      </label>
+      {valor > 0 && <div className="mt-3"><ElegirEstrategia valor={estrategia} onCambio={setEstrategia} /></div>}
+      {valor > 0 && s && (
+        <p className="mt-3 leading-relaxed" aria-live="polite">
+          Pagando <strong className="num">{pesos(Number(cr.cuota_valor) + valor)}</strong> cada {porCuota} terminas el{" "}
+          <strong>{fechaCorta(s.con_plan.fecha_fin, { anio: true })}</strong> en vez del {fechaCorta(s.actual.fecha_fin, { anio: true })}:{" "}
+          <strong>{s.periodos_menos} cuota(s) antes</strong> y te ahorras <strong className="num">{pesos(s.intereses_ahorrados)}</strong> en intereses.
+        </p>
+      )}
+      {sim.error && valor > 0 && <div className="mt-3"><Aviso>{sim.error.message}</Aviso></div>}
+      {guardar.error && <div className="mt-3"><Aviso>{guardar.error.message}</Aviso></div>}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Boton className="py-2.5" disabled={!cambio || guardar.isPending} onClick={() => guardar.mutate(valor)}>
+          {guardar.isPending ? "Guardando…" : actual ? "Actualizar aporte" : "Guardar aporte fijo"}
+        </Boton>
+        {actual > 0 && (
+          <Boton variante="borde" className="py-2.5" disabled={guardar.isPending} onClick={() => { setValor(0); guardar.mutate(0); }}>Quitar aporte</Boton>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Plan({ cr }) {
+  const qc = useQueryClient();
   const [pct, setPct] = useState(50);
   const { data: plan, error, isLoading } = useQuery({
     queryKey: ["creditos", "plan", cr.id, pct],
     queryFn: () => api(`/creditos/${cr.id}/plan/`, { query: { porcentaje: pct } }),
   });
+  const usar = useMutation({
+    mutationFn: (v) => api(`/creditos/${cr.id}/aporte/`, { method: "POST", body: { aporte_extra: v, estrategia: cr.aporte_estrategia || "REDUCIR_PLAZO" } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["creditos"] }),
+  });
   if (cr.sistema === "PLANO") return null;
+  const elegido = plan?.escenarios.find((e) => e.porcentaje_excedente === pct);
   return (
     <section className="rounded-xl border border-linea p-4">
-      <h3 className="flex items-center gap-2 font-display text-lg font-bold text-tinta"><TrendingDown size={20} aria-hidden /> Plan para pagarlo mejor</h3>
+      <h3 className="flex items-center gap-2 font-display text-lg font-bold text-tinta"><TrendingDown size={20} aria-hidden /> Plan según lo que ganas</h3>
       {isLoading && <p className="mt-2 text-suave">Calculando con tus ventas…</p>}
       {error && <div className="mt-2"><Aviso>{error.message}</Aviso></div>}
       {plan && (
@@ -310,7 +425,7 @@ function Plan({ cr }) {
           <p className="mt-3 leading-relaxed">{plan.mensaje}</p>
           {plan.excedente_diario > 0 && (
             <>
-              <p className="mt-4 text-sm font-semibold">¿Qué parte de lo que te sobra cada día quieres usar para abonar?</p>
+              <p className="mt-4 text-sm font-semibold">¿Qué parte de lo que te sobra cada día quieres usar para aportar?</p>
               <div className="mt-2 grid gap-2 sm:grid-cols-3">
                 {plan.escenarios.map((e) => (
                   <button key={e.porcentaje_excedente} type="button" onClick={() => setPct(e.porcentaje_excedente)} aria-pressed={pct === e.porcentaje_excedente}
@@ -321,6 +436,12 @@ function Plan({ cr }) {
                   </button>
                 ))}
               </div>
+              {elegido && elegido.extra_por_cuota > 0 && Number(cr.aporte_extra) !== elegido.extra_por_cuota && (
+                <Boton variante="borde" className="mt-3 py-2.5" disabled={usar.isPending} onClick={() => usar.mutate(elegido.extra_por_cuota)}>
+                  Usar {pesos(elegido.extra_por_cuota)} como mi aporte fijo
+                </Boton>
+              )}
+              {usar.error && <div className="mt-2"><Aviso>{usar.error.message}</Aviso></div>}
             </>
           )}
         </>
@@ -374,6 +495,7 @@ function Detalle({ id, onCerrar }) {
           )}
 
           {cr.estado === "ACTIVO" && <Pagar cr={cr} />}
+          {cr.estado === "ACTIVO" && cr.sistema === "FRANCES" && <AporteFijo cr={cr} />}
           {cr.estado === "ACTIVO" && <Plan cr={cr} />}
           {cr.estado === "PAGADO" && <Aviso tipo="ok">¡Este crédito ya está pagado!</Aviso>}
 
@@ -418,7 +540,7 @@ function Detalle({ id, onCerrar }) {
               <ul className="mt-2 divide-y divide-linea rounded-xl border border-linea text-sm">
                 {cr.pagos.map((p) => (
                   <li key={p.id} className="flex justify-between gap-3 px-4 py-2.5">
-                    <span>{fechaCorta(p.fecha)} · {p.tipo === "CUOTA" ? "Cuota" : "Abono a capital"} <span className="text-suave">({ORIGEN[p.origen_fondos].toLowerCase()})</span></span>
+                    <span>{fechaCorta(p.fecha)} · {p.tipo === "CUOTA" ? "Cuota" : "Aporte extra a capital"} <span className="text-suave">({ORIGEN[p.origen_fondos].toLowerCase()})</span></span>
                     <span className="font-semibold num">{pesos(p.monto)}</span>
                   </li>
                 ))}
@@ -523,6 +645,11 @@ export default function Creditos() {
             <div className="rounded-2xl bg-tinta p-6 text-white">
               <p className="text-white/70">Aparta hoy para tus créditos</p>
               <p className="font-display text-5xl font-extrabold num">{pesos(t.meta_dia.apartar_hoy)}</p>
+              {t.meta_dia.aporte_extra_dia > 0 && (
+                <p className="text-sm text-white/80">
+                  {pesos(t.meta_dia.cuota_obligatoria_dia)} de cuotas + {pesos(t.meta_dia.aporte_extra_dia)} de tu aporte extra
+                </p>
+              )}
               <p className="mt-2 text-sm text-white/80">
                 {t.meta_dia.falta_hoy > 0
                   ? `Llevas ${pesos(t.meta_dia.apartado_hoy)} apartado hoy · faltan ${pesos(t.meta_dia.falta_hoy)}`
@@ -547,6 +674,9 @@ export default function Creditos() {
                 <p className="text-suave">Debes en total</p>
                 <p className="font-display text-3xl font-extrabold text-tinta num">{pesos(t.deuda_total_cuotas)}</p>
                 <p className="mt-1 text-sm text-suave">{pesos(t.deuda_total_capital)} de capital + intereses por pagar</p>
+                {Number(t.aportado_extra_total) > 0 && (
+                  <p className="mt-1 text-sm text-ok">Has aportado {pesos(t.aportado_extra_total)} de más y ahorrado {pesos(t.ahorrado_por_aportes_total)} en intereses.</p>
+                )}
               </div>
             </div>
           </section>
@@ -568,7 +698,7 @@ export default function Creditos() {
             <GraficaDias
               datos={t.ultimos_7_dias}
               barra={{ clave: "utilidad_operativa", nombre: "Ganancia del día" }}
-              referencia={{ valor: t.meta_dia.apartar_hoy, nombre: "Cuota diaria" }}
+              referencia={{ valor: t.meta_dia.apartar_hoy, nombre: t.meta_dia.aporte_extra_dia > 0 ? "Meta diaria (cuotas + aporte)" : "Cuota diaria" }}
               alto={220}
               resumenAccesible="Ganancia de los últimos 7 días frente a la cuota diaria de los créditos"
             />
@@ -593,6 +723,9 @@ export default function Creditos() {
                       <div>
                         <p className="font-display text-lg font-bold text-tinta">{c.entidad}</p>
                         <p className="text-sm text-suave">{ENTIDADES[c.tipo_entidad]} · {DESTINOS[c.destino]}</p>
+                        {Number(c.aporte_extra) > 0 && (
+                          <span className="mt-1 inline-block rounded-full bg-ok-claro px-2 py-0.5 text-xs font-semibold text-ok">Aporte fijo +{pesos(c.aporte_extra)}</span>
+                        )}
                       </div>
                       <p className="text-right">
                         <span className="block font-display text-xl font-extrabold num">{pesos(res?.saldo_capital ?? c.monto)}</span>

@@ -156,6 +156,64 @@ def pagar_cuotas(credito, monto, usuario, medio="EFECTIVO", origen_fondos="CAJA"
     return pago
 
 
+def lo_que_toca(cr, fecha=None):
+    """Lo que hay que pagar ahora: cuotas vencidas + la próxima cuota pendiente."""
+    fecha = fecha or hoy()
+    pend = list(cr.cuotas.exclude(estado=CuotaCredito.Estado.PAGADA).order_by("numero"))
+    vencidas = [c for c in pend if c.fecha_vencimiento < fecha]
+    siguiente = next((c for c in pend if c.fecha_vencimiento >= fecha), None)
+    return sum((c.pendiente for c in vencidas + ([siguiente] if siguiente else [])), CERO)
+
+
+@transaction.atomic
+def pagar(credito, monto, usuario, medio="EFECTIVO", origen_fondos="CAJA", fecha=None, nota="",
+          excedente="CAPITAL", estrategia=None):
+    """
+    Pago que puede traer plata de más. Cubre primero lo que toca (vencidas + próxima cuota)
+    y el resto:
+      - excedente="CAPITAL" (cuota fija): abono a capital -> menos intereses.
+      - excedente="ADELANTAR": adelanta las cuotas siguientes (lo único posible en interés plano).
+    """
+    cr = Credito.objects.get(pk=credito.pk)
+    monto = Decimal(str(monto))
+    if monto <= 0:
+        raise ValidationError("El monto debe ser mayor a cero.")
+    _validar_fondo(cr.negocio, monto, origen_fondos)
+    toca = lo_que_toca(cr)
+    if cr.sistema != C.FRANCES or excedente != "CAPITAL" or monto <= toca:
+        return pagar_cuotas(cr, monto, usuario, medio, origen_fondos, fecha, nota), None
+    pago = pagar_cuotas(cr, toca, usuario, medio, origen_fondos, fecha, nota) if toca > 0 else None
+    cr.refresh_from_db()
+    if cr.estado != Credito.Estado.ACTIVO:
+        raise ValidationError("Con la cuota ya quedó pagado: no hay capital para el excedente.")
+    extra = monto - toca
+    # Capital que aún queda en cuotas futuras: pagarlo todo liquida el crédito sin cobrar
+    # los intereses futuros (en cuota fija se pagan solo sobre lo que se debe).
+    capital_restante = sum((c.capital for c in cr.cuotas.filter(
+        estado=CuotaCredito.Estado.PENDIENTE, pagado_capital=0, pagado_interes=0)), CERO)
+    sobrante = max(CERO, extra - capital_restante)
+    extra = min(extra, capital_restante)
+    abono, efecto = abonar_capital(cr, extra, estrategia or cr.aporte_estrategia, usuario, medio, origen_fondos,
+                                   fecha, nota or "Excedente del pago de cuota")
+    cr.refresh_from_db()
+    return pago or abono, {"cuota": toca, "a_capital": extra, "liquidado": cr.estado == Credito.Estado.PAGADO,
+                           "no_cobrado": sobrante, **efecto}
+
+
+@transaction.atomic
+def configurar_aporte(cr, aporte_extra, estrategia):
+    aporte_extra = Decimal(str(aporte_extra or 0))
+    if aporte_extra < 0:
+        raise ValidationError("El aporte no puede ser negativo.")
+    if aporte_extra and cr.sistema != C.FRANCES:
+        raise ValidationError("En interés plano los aportes extra no bajan el interés; negócialo con el prestamista.")
+    if estrategia not in (C.REDUCIR_PLAZO, C.REDUCIR_CUOTA):
+        raise ValidationError("Estrategia inválida.")
+    cr.aporte_extra, cr.aporte_estrategia = aporte_extra, estrategia
+    cr.save(update_fields=["aporte_extra", "aporte_estrategia", "actualizado"])
+    return cr
+
+
 @transaction.atomic
 def abonar_capital(credito, monto, estrategia, usuario, medio="EFECTIVO", origen_fondos="CAJA", fecha=None, nota=""):
     """
@@ -250,12 +308,42 @@ def estado_credito(cr, fecha=None):
                           "dias": (proxima.fecha_vencimiento - fecha).days} if proxima else None,
         "fecha_fin": pendientes[-1].fecha_vencimiento if pendientes else None,
         "cuota_diaria_equivalente": round(cr.cuota_diaria_equivalente, 0),
+        "aporte_diario_equivalente": round(cr.aporte_diario_equivalente, 0),
+        "aportado_extra": cr.aportado_extra,
+        "intereses_ahorrados_por_aportes": _ahorrado_por_aportes(cr),
+        "proyeccion_con_aporte": _proyeccion_aporte(cr) if pendientes else None,
+        "lo_que_toca": sum((c.pendiente for c in vencidas), CERO) + (
+            next((c.pendiente for c in pendientes if c.fecha_vencimiento >= fecha), CERO)),
         "usura": {
             "tasa_usura_ea": usura.tasa_ea if usura else None,
             "supera_usura": bool(usura and cr.tasa_ea_real > usura.tasa_ea),
             "nota": None if usura else "No hay tasa de usura cargada para esa fecha.",
         },
     }
+
+
+def _ahorrado_por_aportes(cr):
+    """Intereses que ya dejaste de pagar gracias a los abonos a capital hechos."""
+    total = CERO
+    for p in cr.pagos.filter(tipo=PagoCredito.Tipo.ABONO_CAPITAL):
+        try:
+            total += Decimal(p.detalle["antes"]["intereses_restantes"]) - Decimal(p.detalle["despues"]["intereses_restantes"])
+        except (KeyError, TypeError, ArithmeticError):
+            continue
+    return total
+
+
+def _proyeccion_aporte(cr):
+    """Si sigue aportando su extra fijo en cada cuota: cuándo termina y cuánto se ahorra."""
+    if not cr.aporte_extra or cr.sistema != C.FRANCES:
+        return None
+    try:
+        sim = simular(cr, extra_periodico=cr.aporte_extra)
+    except ValidationError:
+        return None
+    return {"aporte": cr.aporte_extra, "periodos_menos": sim["periodos_menos"],
+            "intereses_ahorrados": sim["intereses_ahorrados"], "fecha_fin": sim["con_plan"]["fecha_fin"],
+            "fecha_fin_sin_aporte": sim["actual"]["fecha_fin"]}
 
 
 def simular(cr, abono_unico=0, extra_periodico=0, estrategia=C.REDUCIR_PLAZO):
@@ -380,6 +468,8 @@ def tablero(negocio):
     activos = list(creditos_activos(negocio))
     estados = [(c, estado_credito(c, hoy_)) for c in activos]
     cuota_dia = round(sum((c.cuota_diaria_equivalente for c in activos), CERO), 0)
+    aporte_dia = round(sum((c.aporte_diario_equivalente for c in activos), CERO), 0)
+    meta_dia = cuota_dia + aporte_dia
 
     serie7 = serie_diaria(negocio, hoy_ - dt.timedelta(days=6), hoy_)
     util_hoy = serie7[-1]["utilidad_operativa"]
@@ -426,9 +516,11 @@ def tablero(negocio):
         "deuda_total_capital": sum((e["saldo_capital"] for _, e in estados), CERO),
         "deuda_total_cuotas": sum((e["deuda_pendiente_cuotas"] for _, e in estados), CERO),
         "meta_dia": {
-            "apartar_hoy": cuota_dia,
+            "apartar_hoy": meta_dia,
+            "cuota_obligatoria_dia": cuota_dia,
+            "aporte_extra_dia": aporte_dia,
             "apartado_hoy": apartado_hoy,
-            "falta_hoy": max(CERO, cuota_dia - apartado_hoy),
+            "falta_hoy": max(CERO, meta_dia - apartado_hoy),
             "utilidad_operativa_hoy": util_hoy,
             "cobertura_hoy": cob_hoy,
             "semaforo_hoy": semaforo(cob_hoy),
@@ -444,7 +536,10 @@ def tablero(negocio):
         "ultimos_7_dias": [{"fecha": d["fecha"], "utilidad_operativa": d["utilidad_operativa"],
                             "cubre_cuota": bool(cuota_dia) and d["utilidad_operativa"] >= cuota_dia} for d in serie7],
         "alertas": alertas,
+        "aportado_extra_total": sum((e["aportado_extra"] for _, e in estados), CERO),
+        "ahorrado_por_aportes_total": sum((e["intereses_ahorrados_por_aportes"] for _, e in estados), CERO),
         "creditos": [{"id": c.id, "entidad": c.entidad, "cuota": c.cuota_valor, "frecuencia": c.frecuencia,
+                      "aporte_extra": c.aporte_extra,
                       **{k: e[k] for k in ("saldo_capital", "progreso_pct", "cuotas_restantes", "cuotas_vencidas",
                                            "proxima_cuota", "fecha_fin")}} for c, e in estados],
     }
