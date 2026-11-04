@@ -14,7 +14,11 @@ export const PALETAS = [
   { nombre: "Uva", primario: "#3B2A63", acento: "#FFD166" },
   { nombre: "Terracota", primario: "#8A3B12", acento: "#FFE3B3" },
   { nombre: "Petróleo", primario: "#0F4C5C", acento: "#F4A259" },
+  // Fondo rosado muy suave con tarjetas blancas; el principal es un rosa profundo para que el texto blanco se lea
+  { nombre: "Rosa pastel", primario: "#9E3A63", acento: "#FFD6E5", fondo: "#FDF1F6", linea: "#F3D9E4" },
 ];
+
+const FONDO_BASE = { fondo: "#f3f5f8", linea: "#dfe4ea" };
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
@@ -48,5 +52,8 @@ export function aplicarMarca(colores) {
   raiz.setProperty("--color-tinta-2", `color-mix(in oklab, ${primario} 82%, white)`);
   raiz.setProperty("--color-precio", acento);
   raiz.setProperty("--color-precio-claro", `color-mix(in oklab, ${acento} 22%, white)`);
+  const paleta = PALETAS.find((p) => p.primario.toLowerCase() === primario.toLowerCase() && p.acento.toLowerCase() === acento.toLowerCase());
+  raiz.setProperty("--color-fondo", paleta?.fondo || FONDO_BASE.fondo);
+  raiz.setProperty("--color-linea", paleta?.linea || FONDO_BASE.linea);
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", primario);
 }

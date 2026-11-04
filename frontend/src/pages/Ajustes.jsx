@@ -163,7 +163,7 @@ export default function Ajustes() {
 
             <div>
               <p className="mb-2 text-sm font-semibold">Paletas listas</p>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {PALETAS.map((p) => {
                   const activa = paletaActual?.nombre === p.nombre;
                   return (
