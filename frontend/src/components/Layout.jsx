@@ -68,7 +68,8 @@ export default function Layout() {
   const { pathname } = useLocation();
   const [abierto, setAbierto] = useState(false);
 
-  const usaCola = tieneModulo("pedidos") && negocio?.usa_cola_pedidos;
+  // Pedidos siempre se ve: ahí se cobran los pedidos registrados, haya o no cola de cocina
+  const usaCola = tieneModulo("pedidos");
   const items = NAV.filter(
     (i) => (!i.modulo || tieneModulo(i.modulo)) && (!i.admin || esAdmin) && (!i.cola || usaCola)
   );

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { CheckCircle2, Minus, Plus, Search, Share2, ShoppingBasket, Trash2 } from "lucide-react";
+import { CalendarDays, CheckCircle2, Minus, Plus, Search, Share2, ShoppingBasket, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { fechaCorta, hoyISO, numero, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
@@ -289,7 +289,10 @@ export default function Vender() {
       return copia;
     });
   const usaCola = tieneModulo("pedidos") && negocio?.usa_cola_pedidos;
-  const registrarPrimero = usaCola && !fecha; // con cola: se registra el pedido y se cobra después
+  // Siempre se registra el pedido y se cobra después (en Pedidos, en Hoy o con "Cobrar ahora").
+  // Solo la venta de un día anterior se cobra de una, porque ese día ya pasó.
+  const registrarPrimero = !fecha;
+  const [otroDia, setOtroDia] = useState(false);
 
   const refrescar = () => ["productos", "caja", "clientes", "pedidos", "ventas", "reportes"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   const alVender = (venta) => {
@@ -318,8 +321,8 @@ export default function Vender() {
     onAccion: () => (registrarPrimero ? registrar.mutate() : setCobrando(true)),
     textoAccion: registrarPrimero ? "Registrar pedido" : fecha ? `Cobrar venta del ${fechaCorta(fecha)}` : "Cobrar",
     enviando: registrar.isPending,
-    puedeVender: registrarPrimero || !cajaCerrada,
-    nota, onNota: setNota, usaCola: registrarPrimero, entregarYa, onEntregarYa: setEntregarYa,
+    puedeVender: registrarPrimero || Boolean(fecha) || !cajaCerrada,
+    nota, onNota: setNota, usaCola: usaCola && registrarPrimero, entregarYa, onEntregarYa: setEntregarYa,
     numMesas: negocio?.num_mesas || 0, mesa, onMesa: setMesa,
   };
 
@@ -333,6 +336,27 @@ export default function Vender() {
               Estás registrando una venta del <strong className="capitalize">{fechaCorta(fecha, { dia: true, anio: true })}</strong>. Su dinero queda en el cuadre de ese día.
             </p>
             <Boton variante="borde" onClick={() => setParams({})} className="py-2">Volver a hoy</Boton>
+          </div>
+        )}
+        {esAdmin && !fecha && (
+          <div className="mb-3 flex flex-wrap items-center justify-end gap-2 text-sm">
+            {otroDia ? (
+              <>
+                <label htmlFor="otro-dia" className="font-medium">¿De qué día es la venta?</label>
+                <input
+                  id="otro-dia"
+                  type="date"
+                  max={new Date(new Date(hoyISO()).getTime() - 86_400_000).toISOString().slice(0, 10)}
+                  onChange={(e) => e.target.value && e.target.value < hoyISO() && setParams({ fecha: e.target.value })}
+                  className="rounded-lg border border-linea bg-papel px-3 py-2"
+                />
+                <button onClick={() => setOtroDia(false)} className="px-2 py-2 font-semibold text-suave">Cancelar</button>
+              </>
+            ) : (
+              <button onClick={() => setOtroDia(true)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 font-semibold text-tinta hover:bg-papel">
+                <CalendarDays size={17} aria-hidden /> Registrar venta de otro día
+              </button>
+            )}
           </div>
         )}
         {registrar.error && <div className="mb-4"><Aviso>{registrar.error.message}</Aviso></div>}
