@@ -43,6 +43,8 @@ def momento_en(fecha):
         fecha = fecha.date()
     if fecha > hoy():
         raise ValidationError("La fecha no puede ser futura.")
+    if fecha.year < 2020:
+        raise ValidationError("Revisa el año de la fecha.")
     if fecha == hoy():
         return None
     tz = timezone.get_current_timezone()

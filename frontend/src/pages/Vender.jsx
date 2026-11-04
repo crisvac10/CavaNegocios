@@ -9,6 +9,11 @@ import { useCarrito } from "../context/Carrito";
 import Cobro from "../components/Cobro";
 import { Aviso, Boton, Hoja, InputPesos } from "../components/ui";
 
+/* ---------- Venta de un día anterior ---------- */
+const FECHA_MINIMA = "2020-01-01";
+const ayerISO = () => new Date(new Date(hoyISO()).getTime() - 86_400_000).toISOString().slice(0, 10);
+const fechaValida = (f) => /^\d{4}-\d{2}-\d{2}$/.test(f) && f >= FECHA_MINIMA && f < hoyISO();
+
 /* ---------- Producto como etiqueta de precio ---------- */
 function Etiqueta({ p, cantidad, onAgregar, conFotos }) {
   const agotado = p.controla_stock && Number(p.stock) <= 0;
@@ -246,7 +251,8 @@ export default function Vender() {
   const [cobrando, setCobrando] = useState(false);
   const [cobrandoPedido, setCobrandoPedido] = useState(null);
   // Venta de un día anterior (solo el dueño): /vender?fecha=2026-10-30
-  const fecha = esAdmin && params.get("fecha") && params.get("fecha") < hoyISO() ? params.get("fecha") : null;
+  const fechaParam = params.get("fecha") || "";
+  const fecha = esAdmin && fechaValida(fechaParam) ? fechaParam : null;
   const [cuentaMovil, setCuentaMovil] = useState(false);
   const [abrirCaja, setAbrirCaja] = useState(false);
   const [ventaLista, setVentaLista] = useState(null);
@@ -293,6 +299,7 @@ export default function Vender() {
   // Solo la venta de un día anterior se cobra de una, porque ese día ya pasó.
   const registrarPrimero = !fecha;
   const [otroDia, setOtroDia] = useState(false);
+  const [diaElegido, setDiaElegido] = useState("");
 
   const refrescar = () => ["productos", "caja", "clientes", "pedidos", "ventas", "reportes"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   const alVender = (venta) => {
@@ -346,10 +353,17 @@ export default function Vender() {
                 <input
                   id="otro-dia"
                   type="date"
-                  max={new Date(new Date(hoyISO()).getTime() - 86_400_000).toISOString().slice(0, 10)}
-                  onChange={(e) => e.target.value && e.target.value < hoyISO() && setParams({ fecha: e.target.value })}
+                  min={FECHA_MINIMA}
+                  max={ayerISO()}
+                  value={diaElegido}
+                  // Solo se guarda lo escrito: mientras se teclea el año el valor pasa por fechas como 0002-10-01
+                  onChange={(e) => setDiaElegido(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && fechaValida(diaElegido) && setParams({ fecha: diaElegido })}
                   className="rounded-lg border border-linea bg-papel px-3 py-2"
                 />
+                <Boton onClick={() => setParams({ fecha: diaElegido })} disabled={!fechaValida(diaElegido)} className="py-2">
+                  Continuar
+                </Boton>
                 <button onClick={() => setOtroDia(false)} className="px-2 py-2 font-semibold text-suave">Cancelar</button>
               </>
             ) : (
