@@ -47,7 +47,8 @@ export default function EditorVenta({ venta, onCerrar, onListo }) {
   const subtotal = lineas.reduce((s, l) => s + l.cantidad * l.precio, 0);
   const total = Math.max(subtotal - descuento, 0);
   const pagado = Object.values(montos).reduce((s, v) => s + (Number(v) || 0), 0);
-  const editaPagos = !abierta && esAdmin;
+  // Lo cobrado hoy lo corrige cualquiera; lo de otros días, solo el dueño
+  const editaPagos = !abierta && (esAdmin || fechaLocal(venta.creado) === hoyISO());
   const unSoloMedio = Object.keys(montos).length <= 1 && Number(venta.saldo_pendiente || 0) === 0;
   // Con un solo medio y sin fiado, el pago sigue al total automáticamente
   const pagosFinales = editaPagos
@@ -96,7 +97,7 @@ export default function EditorVenta({ venta, onCerrar, onListo }) {
         : null;
 
   return (
-    <Hoja titulo={abierta ? `Editar pedido${venta.turno ? ` · turno ${venta.turno}` : ""}` : `Editar venta #${venta.numero}`} onCerrar={onCerrar} ancho="max-w-xl">
+    <Hoja titulo={abierta || (venta.turno && !venta.entregado_en) ? `Editar pedido${venta.turno ? ` · turno ${venta.turno}` : ""}` : `Editar venta #${venta.numero}`} onCerrar={onCerrar} ancho="max-w-xl">
       <div className="space-y-4">
         <ul className="divide-y divide-linea rounded-xl border border-linea">
           {lineas.map((l, i) => (
@@ -149,10 +150,10 @@ export default function EditorVenta({ venta, onCerrar, onListo }) {
 
         {editaPagos && (
           <section className="space-y-3 rounded-xl bg-fondo p-4">
-            <label className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold">
+            {esAdmin && <label className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold">
               Fecha de la venta
               <input type="date" value={fecha} max={hoyISO()} onChange={(e) => setFecha(e.target.value)} className="rounded-lg border border-linea bg-papel px-2 py-1.5 font-normal" />
-            </label>
+            </label>}
             <div>
               <p className="mb-2 text-sm font-semibold">Cómo se pagó</p>
               {unSoloMedio && Object.keys(montos).length === 1 ? (
@@ -190,7 +191,8 @@ export default function EditorVenta({ venta, onCerrar, onListo }) {
           {guardar.isPending ? "Guardando…" : "Guardar cambios"}
         </Boton>
 
-        <div className="border-t border-linea pt-4">
+        {/* Eliminar algo ya cobrado solo lo hace el dueño */}
+        <div className={`border-t border-linea pt-4 ${abierta || esAdmin ? "" : "hidden"}`}>
           {!confirmar ? (
             <button type="button" onClick={() => setConfirmar(true)} className="inline-flex items-center gap-2 text-sm font-semibold text-alerta hover:underline">
               <Trash2 size={16} aria-hidden /> {abierta ? "Cancelar pedido" : "Eliminar venta"}

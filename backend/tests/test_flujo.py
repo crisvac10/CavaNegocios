@@ -666,10 +666,15 @@ class PedidosPorCobrarYEdicion(Base):
                                                                            {"producto": self.pan.id, "cantidad": 1}], "nota": "sin azúcar"}, format="json"))
         self.assertEqual((v["total"], v["nota"]), (9000, "sin azúcar"))
         self.cafe.refresh_from_db(); self.assertEqual(self.cafe.stock, 7)
-        # El cajero no puede cambiar pagos ni fecha, ni editar una venta ya cobrada
-        self.assertEqual(self.c.post(f"/api/ventas/{p['id']}/editar/", {"items": [{"producto": self.cafe.id}], "fecha": str(hoy())}, format="json").status_code, 403)
+        # El cajero no puede pasar una venta a otro día
+        ayer = str(hoy() - dt.timedelta(days=1))
+        self.assertEqual(self.c.post(f"/api/ventas/{p['id']}/editar/", {"items": [{"producto": self.cafe.id}], "fecha": ayer}, format="json").status_code, 403)
         self.ok(self.c.post(f"/api/ventas/{p['id']}/cobrar/", {"pagos": [{"medio": "EFECTIVO", "monto": 9000}]}, format="json"))
-        self.assertEqual(self.c.post(f"/api/ventas/{p['id']}/editar/", {"items": [{"producto": self.cafe.id}]}, format="json").status_code, 403)
+        # Lo cobrado hoy sí lo corrige (el cliente pidió otro pan), pero no lo puede eliminar
+        v = self.ok(self.c.post(f"/api/ventas/{p['id']}/editar/", {"items": [{"producto": self.cafe.id, "cantidad": 3}, {"producto": self.pan.id, "cantidad": 2}],
+                                                                   "pagos": [{"medio": "EFECTIVO", "monto": 12000}], "fecha": str(hoy())}, format="json"))
+        self.assertEqual((v["total"], v["estado"]), (12000, "PAGADA"))
+        self.assertEqual(self.c.post(f"/api/ventas/{p['id']}/eliminar/", {}, format="json").status_code, 403)
         # Cancelar (eliminar) un pedido abierto sí puede el cajero
         p2 = self.venta(registrar=True)
         self.ok(self.c.post(f"/api/ventas/{p2['id']}/eliminar/", {"motivo": "el cliente se fue"}, format="json"))

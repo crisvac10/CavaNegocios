@@ -59,16 +59,14 @@ function Tarjeta({ p, ahora, onEntregar, onCobrar, onEditar, enviando }) {
         <span className="font-display text-xl font-extrabold text-tinta num">{pesos(p.total)}</span>
       </p>
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-b-2xl bg-linea">
-        {porCobrar ? (
-          <>
-            <button onClick={() => onEditar(p)} className="flex items-center justify-center gap-1.5 bg-papel py-3.5 font-semibold text-tinta hover:bg-fondo">
-              <Pencil size={17} aria-hidden /> Editar
-            </button>
-            <button onClick={() => onCobrar(p)} className="bg-tinta py-3.5 font-semibold text-white hover:bg-tinta-2">
-              Cobrar
-            </button>
-          </>
-        ) : null}
+        <button onClick={() => onEditar(p)} className={`flex items-center justify-center gap-1.5 bg-papel py-3.5 font-semibold text-tinta hover:bg-fondo ${porCobrar ? "" : "col-span-2"}`}>
+          <Pencil size={17} aria-hidden /> Editar
+        </button>
+        {porCobrar && (
+          <button onClick={() => onCobrar(p)} className="bg-tinta py-3.5 font-semibold text-white hover:bg-tinta-2">
+            Cobrar
+          </button>
+        )}
         {!entregado && (
           <button
             onClick={() => onEntregar(p)}
@@ -108,6 +106,17 @@ export default function Pedidos() {
   });
 
   const refrescar = () => qc.invalidateQueries({ queryKey: ["pedidos"] });
+  const [errorEditar, setErrorEditar] = useState(null);
+  // Lo ya cobrado se edita con sus pagos, así que se trae la venta completa antes de abrir el editor
+  const abrirEditor = async (p) => {
+    setErrorEditar(null);
+    if (p.estado_pago === "ABIERTA") return setEditando(p);
+    try {
+      setEditando(await api(`/ventas/${p.id}/`));
+    } catch (e) {
+      setErrorEditar(e);
+    }
+  };
   const entregar = useMutation({
     mutationFn: (p) => api(`/pedidos/${p.id}/entregar/`, { method: "POST" }),
     // Lo quitamos de la pantalla de una: el toque se siente inmediato aunque el internet esté lento
@@ -128,7 +137,7 @@ export default function Pedidos() {
   });
 
   const lista = pendientes.data || [];
-  const error = pendientes.error || entregar.error || deshacer.error;
+  const error = pendientes.error || entregar.error || deshacer.error || errorEditar;
 
   return (
     <div className="px-4 py-5 lg:px-6 lg:py-8">
@@ -165,7 +174,7 @@ export default function Pedidos() {
         ) : (
           <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {lista.map((p) => (
-              <Tarjeta key={p.id} p={p} ahora={ahora} onEntregar={entregar.mutate} onCobrar={setCobrando} onEditar={setEditando}
+              <Tarjeta key={p.id} p={p} ahora={ahora} onEntregar={entregar.mutate} onCobrar={setCobrando} onEditar={abrirEditor}
                 enviando={entregar.isPending && entregar.variables?.id === p.id} />
             ))}
           </div>

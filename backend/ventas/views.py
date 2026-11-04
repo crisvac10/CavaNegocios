@@ -221,12 +221,16 @@ class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
             raise ValidationError({"cliente": "No existe."})
         return c
 
-    def _puede_tocar(self, v):
-        """Pedidos por cobrar: cualquiera del negocio. Ventas ya cobradas o de otros días: solo el dueño."""
-        if self.request.user.rol == "ADMIN":
+    def _puede_tocar(self, v, editar=False):
+        """
+        Pedidos por cobrar: cualquiera del negocio. Un cajero también corrige lo que se cobró hoy
+        (ej. el cliente agregó algo). Eliminar lo cobrado o tocar otros días: solo el dueño.
+        """
+        if self.request.user.rol == "ADMIN" or v.estado == Venta.Estado.ABIERTA:
             return
-        if v.estado != Venta.Estado.ABIERTA:
-            raise PermissionDenied("Solo el administrador puede cambiar una venta ya cobrada.")
+        if editar and timezone.localdate(v.creado) == timezone.localdate():
+            return
+        raise PermissionDenied("Solo el administrador puede cambiar una venta ya cobrada de otro día o eliminarla.")
 
     def _respuesta(self, v, status=200):
         data = VentaSerializer(v, context={"request": self.request}).data
@@ -246,12 +250,12 @@ class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
     @action(detail=True, methods=["post"])
     def editar(self, request, pk=None):
         v = self.get_object()
-        self._puede_tocar(v)
+        self._puede_tocar(v, editar=True)
         e = EdicionEntrada(data=request.data)
         e.is_valid(raise_exception=True)
         d = e.validated_data
-        if (d.get("fecha") or d.get("pagos") is not None) and request.user.rol != "ADMIN":
-            raise PermissionDenied("Solo el administrador cambia la fecha o los pagos.")
+        if d.get("fecha") and request.user.rol != "ADMIN" and str(d["fecha"]) != str(timezone.localdate(v.creado)):
+            raise PermissionDenied("Solo el administrador cambia la fecha de una venta.")
         v = servicios.editar_venta(self.negocio, request.user, v, d["items"], d.get("descuento"), d.get("nota"),
                                    d.get("pagos"), self._cliente(d.get("cliente")), d.get("fecha"),
                                    d.get("efectivo_recibido"), d.get("mesa"))
