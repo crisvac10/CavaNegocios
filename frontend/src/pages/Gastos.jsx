@@ -66,7 +66,7 @@ function NuevoGasto({ onCerrar }) {
         </div>
         <label className="flex items-start gap-3 rounded-lg bg-fondo p-3 text-sm">
           <input type="checkbox" checked={f.pagado_de_caja} onChange={(e) => setF({ ...f, pagado_de_caja: e.target.checked })} className="mt-0.5 h-4 w-4 accent-tinta" />
-          <span><strong>Salió de la plata del negocio hoy.</strong> Se descuenta en el cuadre del día. Desmárcalo si lo pagaste de tu bolsillo o de otra cuenta.</span>
+          <span><strong>Salió de la plata del negocio{f.fecha === hoyISO() ? " hoy" : " ese día"}.</strong> Se descuenta en el cuadre de {f.fecha === hoyISO() ? "hoy" : "esa fecha"}. Desmárcalo si lo pagaste de tu bolsillo o de otra cuenta.</span>
         </label>
         {guardar.error && <Aviso>{guardar.error.message}</Aviso>}
         <Boton className="w-full" disabled={!f.monto || !f.descripcion.trim() || !categoria || guardar.isPending}>
@@ -167,20 +167,17 @@ function NuevaCompra({ proveedores, onCerrar }) {
   const medios = negocio.medios_pago_activos;
   const { data: productos = [] } = useQuery({ queryKey: ["productos", "admin"], queryFn: () => api("/productos/") });
   const activos = productos.filter((p) => p.activo);
-  const [items, setItems] = useState([{ producto: "", cantidad: "", costo_unitario: 0 }]);
-  const [f, setF] = useState({ proveedor: "", medio: medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0], pagado_de_caja: true, nota: "" });
-  const total = items.reduce((s, it) => s + (Number(it.cantidad) || 0) * (it.costo_unitario || 0), 0);
-  const setItem = (i, k, v) => setItems((xs) => xs.map((x, j) => {
-    if (j !== i) return x;
-    const nuevo = { ...x, [k]: v };
-    if (k === "producto") nuevo.costo_unitario = Number(productos.find((p) => p.id === Number(v))?.costo) || 0;
-    return nuevo;
-  }));
-  const validos = items.filter((it) => it.producto && Number(it.cantidad) > 0);
+  // Se escribe lo que dice la factura: cuántas unidades y cuánto se pagó por todas; el valor por unidad sale solo
+  const [items, setItems] = useState([{ producto: "", cantidad: "", total: 0 }]);
+  const [f, setF] = useState({ proveedor: "", medio: medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0], pagado_de_caja: true, nota: "", fecha: hoyISO() });
+  const total = items.reduce((s, it) => s + (it.total || 0), 0);
+  const setItem = (i, k, v) => setItems((xs) => xs.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
+  const unitario = (it) => (Number(it.cantidad) > 0 && it.total > 0 ? it.total / Number(it.cantidad) : null);
+  const validos = items.filter((it) => it.producto && Number(it.cantidad) > 0 && it.total > 0);
   const guardar = useMutation({
     mutationFn: () => api("/compras/", {
       method: "POST",
-      body: { ...f, proveedor: f.proveedor || null, items: validos.map((it) => ({ producto: Number(it.producto), cantidad: Number(it.cantidad), costo_unitario: it.costo_unitario })) },
+      body: { ...f, proveedor: f.proveedor || null, items: validos.map((it) => ({ producto: Number(it.producto), cantidad: Number(it.cantidad), total: it.total })) },
     }),
     onSuccess: () => { ["compras", "productos", "caja"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })); onCerrar(); },
   });
@@ -191,16 +188,21 @@ function NuevaCompra({ proveedores, onCerrar }) {
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); guardar.mutate(); }}>
         <div className="space-y-2">
           {items.map((it, i) => (
-            <div key={i} className="grid grid-cols-[1fr_5.5rem] gap-2 rounded-lg border border-linea p-2 sm:grid-cols-[1fr_6rem_9rem_2.5rem] sm:border-0 sm:p-0">
-              <select value={it.producto} onChange={(e) => setItem(i, "producto", e.target.value)} className={`${campo} col-span-2 sm:col-span-1`} aria-label="Producto">
-                <option value="">Producto…</option>
-                {activos.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
-              </select>
-              <input inputMode="decimal" placeholder="Cant." value={it.cantidad} onChange={(e) => setItem(i, "cantidad", e.target.value)} className={campo} aria-label="Cantidad" />
-              <InputPesos valor={it.costo_unitario} onCambio={(v) => setItem(i, "costo_unitario", v)} aria-label="Costo unitario" />
-              <button type="button" onClick={() => setItems((xs) => xs.length > 1 ? xs.filter((_, j) => j !== i) : xs)} className="hidden place-items-center rounded-lg text-suave hover:text-alerta sm:grid" aria-label="Quitar línea">
-                <Trash2 size={17} />
-              </button>
+            <div key={i} className="rounded-lg border border-linea p-2 sm:border-0 sm:p-0">
+              <div className="grid grid-cols-[5.5rem_1fr] gap-2 sm:grid-cols-[1fr_6rem_10rem_2.5rem]">
+                <select value={it.producto} onChange={(e) => setItem(i, "producto", e.target.value)} className={`${campo} col-span-2 sm:col-span-1`} aria-label="Producto">
+                  <option value="">Producto…</option>
+                  {activos.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </select>
+                <input inputMode="decimal" placeholder="Unidades" value={it.cantidad} onChange={(e) => setItem(i, "cantidad", e.target.value.replace(",", "."))} className={campo} aria-label="Unidades compradas" />
+                <InputPesos valor={it.total} onCambio={(v) => setItem(i, "total", v)} placeholder="Total pagado" aria-label="Total pagado por estas unidades" />
+                <button type="button" onClick={() => setItems((xs) => xs.length > 1 ? xs.filter((_, j) => j !== i) : xs)} className="hidden place-items-center rounded-lg text-suave hover:text-alerta sm:grid" aria-label="Quitar línea">
+                  <Trash2 size={17} />
+                </button>
+              </div>
+              <p className="mt-1 text-right text-xs text-suave sm:pr-12">
+                {unitario(it) != null ? <>Sale a <strong className="num">{pesos(unitario(it))}</strong> por unidad</> : "Unidades y total pagado → valor por unidad"}
+              </p>
             </div>
           ))}
           <button type="button" onClick={() => setItems((xs) => [...xs, { producto: "", cantidad: "", costo_unitario: 0 }])} className="flex items-center gap-1.5 text-sm font-semibold text-tinta">
@@ -221,10 +223,14 @@ function NuevaCompra({ proveedores, onCerrar }) {
               {Object.entries(MEDIOS).map(([m, t]) => <option key={m} value={m}>{t}</option>)}
             </select>
           </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold">Fecha de la compra</span>
+            <input type="date" max={hoyISO()} value={f.fecha} onChange={(e) => setF({ ...f, fecha: e.target.value })} className={campo} />
+          </label>
         </div>
         <label className="flex items-start gap-3 rounded-lg bg-fondo p-3 text-sm">
           <input type="checkbox" checked={f.pagado_de_caja} onChange={(e) => setF({ ...f, pagado_de_caja: e.target.checked })} className="mt-0.5 h-4 w-4 accent-tinta" />
-          <span><strong>Salió de la plata del negocio hoy.</strong> Se descuenta en el cuadre del día.</span>
+          <span><strong>Salió de la plata del negocio{f.fecha === hoyISO() ? " hoy" : " ese día"}.</strong> Se descuenta en el cuadre de {f.fecha === hoyISO() ? "hoy" : "esa fecha"}.</span>
         </label>
         <div className="flex items-baseline justify-between border-t-2 border-tinta pt-3">
           <span className="font-display text-lg font-bold text-tinta">Total compra</span>

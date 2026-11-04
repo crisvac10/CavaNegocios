@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useSesion } from "./context/Sesion";
 import Layout from "./components/Layout";
+import { CarritoProvider } from "./context/Carrito";
 import Login from "./pages/Login";
 import Vender from "./pages/Vender";
 import Hoy from "./pages/Hoy";
@@ -44,7 +45,7 @@ export default function App() {
   }
   return (
     <Routes>
-      <Route element={<Layout />}>
+      <Route element={<CarritoProvider><Layout /></CarritoProvider>}>
         <Route path="/" element={<Navigate to="/vender" replace />} />
         <Route path="/vender" element={<Vender />} />
         <Route path="/hoy" element={<Hoy />} />

@@ -454,9 +454,10 @@ function Detalle({ id, onCerrar }) {
   const qc = useQueryClient();
   const { data: cr, error, isLoading } = useQuery({ queryKey: ["creditos", "detalle", id], queryFn: () => api(`/creditos/${id}/`) });
   const [verTodas, setVerTodas] = useState(false);
+  const [confirmarBorrar, setConfirmarBorrar] = useState(false);
   const cancelar = useMutation({
-    mutationFn: () => api(`/creditos/${id}/cancelar/`, { method: "POST" }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["creditos"] }); onCerrar(); },
+    mutationFn: () => api(`/creditos/${id}/eliminar/`, { method: "POST" }),
+    onSuccess: () => { ["creditos", "caja", "reportes"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })); onCerrar(); },
   });
   const r = cr?.resumen;
   const cuotas = cr ? (verTodas ? cr.cuotas : cr.cuotas.filter((c) => c.estado !== "PAGADA").slice(0, 6)) : [];
@@ -548,11 +549,27 @@ function Detalle({ id, onCerrar }) {
             </section>
           )}
 
-          {cr.pagos.length === 0 && cr.estado === "ACTIVO" && (
-            <button onClick={() => cancelar.mutate()} className="text-sm font-semibold text-alerta hover:underline">
-              Lo registré por error: quitar este crédito
-            </button>
-          )}
+          <div className="border-t border-linea pt-4">
+            {!confirmarBorrar ? (
+              <button onClick={() => setConfirmarBorrar(true)} className="text-sm font-semibold text-alerta hover:underline">
+                Eliminar este crédito
+              </button>
+            ) : (
+              <div className="rounded-xl bg-alerta-claro p-4" role="alertdialog" aria-label="Confirmar eliminación">
+                <p className="font-semibold text-alerta">¿Eliminar el crédito de {cr.entidad}?</p>
+                <p className="mt-1 text-sm">
+                  Se borran sus cuotas{cr.pagos.length ? ` y sus ${cr.pagos.length} pago(s)` : ""}, y su dinero sale del cuadre de los días en que se registró.
+                  Úsalo si lo registraste por error. No se puede deshacer.
+                </p>
+                <div className="mt-3 flex gap-2">
+                  <Boton variante="borde" className="flex-1 py-2.5" onClick={() => setConfirmarBorrar(false)}>No</Boton>
+                  <button onClick={() => cancelar.mutate()} disabled={cancelar.isPending} className="flex-1 rounded-lg bg-alerta py-2.5 font-semibold text-white disabled:opacity-60">
+                    {cancelar.isPending ? "Eliminando…" : "Sí, eliminar"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           {cancelar.error && <Aviso>{cancelar.error.message}</Aviso>}
         </div>
       )}

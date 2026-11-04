@@ -30,6 +30,25 @@ def rango_fechas(desde, hasta):
     return inicio, fin
 
 
+def momento_en(fecha):
+    """
+    Fecha elegida por el usuario -> datetime para guardar el registro en ese día.
+    Hoy (o vacía) -> None, que significa "ahora". Días anteriores -> esa fecha a la hora actual.
+    """
+    if not fecha:
+        return None
+    if isinstance(fecha, str):
+        fecha = dt.date.fromisoformat(fecha)
+    if isinstance(fecha, dt.datetime):
+        fecha = fecha.date()
+    if fecha > hoy():
+        raise ValidationError("La fecha no puede ser futura.")
+    if fecha == hoy():
+        return None
+    tz = timezone.get_current_timezone()
+    return timezone.make_aware(dt.datetime.combine(fecha, timezone.localtime().time().replace(microsecond=0)), tz)
+
+
 def leer_rango(request, dias_defecto=0):
     """Lee ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD; por defecto hoy (o últimos N días)."""
     try:

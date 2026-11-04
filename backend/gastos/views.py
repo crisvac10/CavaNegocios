@@ -15,7 +15,7 @@ from negocios.mixins import PERMISOS_TENANT, TenantMixin, TenantModelViewSet
 from negocios.models import Consecutivo
 from negocios.permisos import EsAdmin
 from negocios.serializers_base import TenantFKField
-from negocios.utils import CERO, hoy, leer_rango
+from negocios.utils import CERO, hoy, leer_rango, momento_en
 
 from .models import CATEGORIAS_GASTO_DEFECTO, CategoriaGasto, Compra, DetalleCompra, Gasto, Proveedor
 
@@ -54,9 +54,16 @@ class GastoSerializer(serializers.ModelSerializer):
 
 
 class DetalleCompraEntrada(serializers.Serializer):
+    """Se manda el valor TOTAL pagado por la línea (lo natural en una factura) o el costo unitario."""
     producto = serializers.IntegerField()
     cantidad = serializers.DecimalField(max_digits=14, decimal_places=3)
-    costo_unitario = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+    costo_unitario = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
+
+    def validate(self, d):
+        if d.get("total") is None and d.get("costo_unitario") is None:
+            raise serializers.ValidationError("Envía el total de la línea o el costo unitario.")
+        return d
 
 
 class CompraSerializer(serializers.ModelSerializer):
@@ -113,10 +120,11 @@ class GastoViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
     @transaction.atomic
     def perform_create(self, serializer):
         fecha = serializer.validated_data.get("fecha") or hoy()
+        momento = momento_en(fecha)  # gasto de un día anterior: su dinero sale del cuadre de ESE día
         g = serializer.save(negocio=self.negocio, usuario=self.request.user, fecha=fecha)
         if g.pagado_de_caja:
             caja.registrar(self.negocio, Origen.GASTO, -g.monto, medio=g.medio, concepto=g.descripcion,
-                           referencia=f"gasto:{g.id}", usuario=self.request.user)
+                           referencia=f"gasto:{g.id}", usuario=self.request.user, momento=momento)
 
     @action(detail=True, methods=["post"], permission_classes=PERMISOS_TENANT + [EsAdmin])
     @transaction.atomic
@@ -127,11 +135,15 @@ class GastoViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
         g.anulado = True
         g.save(update_fields=["anulado", "actualizado"])
         if g.pagado_de_caja:
-            sesion = caja.sesion_abierta(self.negocio, requerida=False)
-            if sesion:  # devuelve el dinero a la caja abierta
+            # Un gasto registrado por error se borra del cuadre de su día (sin caja registradora o caja abierta)
+            from caja.models import MovimientoCaja
+            movs = MovimientoCaja.objects.filter(negocio=self.negocio, referencia=f"gasto:{g.id}")
+            if all(m.sesion_id is None or m.sesion.estado == "ABIERTA" for m in movs):
+                movs.delete()
+            else:  # su caja ya se cerró: el dinero vuelve en la caja de hoy
                 caja.registrar(self.negocio, Origen.GASTO, g.monto, medio=g.medio,
                                concepto=f"Anula gasto: {g.descripcion}", referencia=f"gasto:{g.id}",
-                               usuario=request.user, sesion=sesion)
+                               usuario=request.user)
         return Response(GastoSerializer(g, context=self.get_serializer_context()).data)
 
 
@@ -154,14 +166,21 @@ class CompraViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixi
         productos = {p.id: p for p in Producto.objects.filter(negocio=self.negocio, id__in=[i["producto"] for i in items])}
         compra = Compra.objects.create(negocio=self.negocio, numero=Consecutivo.siguiente(self.negocio, "compra"),
                                        usuario=request.user, fecha=d.pop("fecha", None) or hoy(), **d)
+        momento = momento_en(compra.fecha)
         total = CERO
         for it in items:
             p = productos.get(it["producto"])
             if not p:
                 raise ValidationError(f"Producto {it['producto']} no existe.")
-            if it["cantidad"] <= 0 or it["costo_unitario"] < 0:
-                raise ValidationError("Cantidad o costo inválido.")
-            sub = (it["cantidad"] * it["costo_unitario"]).quantize(Decimal("0.01"))
+            if it["cantidad"] <= 0:
+                raise ValidationError("Cantidad inválida.")
+            if it.get("total") is not None:  # lo pagado por la línea manda; el unitario sale de dividir
+                sub = it["total"]
+                it["costo_unitario"] = (sub / it["cantidad"]).quantize(Decimal("0.01"))
+            else:
+                sub = (it["cantidad"] * it["costo_unitario"]).quantize(Decimal("0.01"))
+            if sub < 0:
+                raise ValidationError("Valor inválido.")
             DetalleCompra.objects.create(compra=compra, producto=p, cantidad=it["cantidad"],
                                          costo_unitario=it["costo_unitario"], subtotal=sub)
             total += sub
@@ -177,5 +196,5 @@ class CompraViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixi
             nombre = compra.proveedor.nombre if compra.proveedor else "proveedor"
             caja.registrar(self.negocio, Origen.COMPRA, -total, medio=compra.medio,
                            concepto=f"Compra #{compra.numero} a {nombre}", referencia=f"compra:{compra.id}",
-                           usuario=request.user)
+                           usuario=request.user, momento=momento)
         return Response(CompraSerializer(compra, context=self.get_serializer_context()).data, status=201)

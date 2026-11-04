@@ -613,3 +613,174 @@ class AportesExtra(Base):
         plano = self.crear(entidad="Don Pedro", sistema="PLANO", tasa=10, tipo_tasa="MENSUAL", frecuencia="DIARIA", num_cuotas=30, monto=300000)
         r = self.c.post(f"/api/creditos/{plano['id']}/aporte/", {"aporte_extra": 1000}, format="json")
         self.assertEqual(r.status_code, 400)
+
+
+class PedidosPorCobrarYEdicion(Base):
+    def setUp(self):
+        super().setUp()
+        self.neg.usa_caja = False
+        self.neg.save()
+
+    def venta(self, **extra):
+        datos = {"items": [{"producto": self.cafe.id, "cantidad": 2}]}
+        datos.update(extra)
+        return self.ok(self.c.post("/api/ventas/", datos, format="json"), 201)
+
+    def test_registrar_varios_pedidos_y_cobrar_despues(self):
+        self.login("cajero")
+        p1 = self.venta(registrar=True, nota="mesa 1")
+        p2 = self.venta(registrar=True, items=[{"producto": self.pan.id, "cantidad": 1}])
+        self.assertEqual((p1["estado"], p2["estado"]), ("ABIERTA", "ABIERTA"))
+        cola = self.ok(self.c.get("/api/pedidos/"))
+        self.assertEqual([p["turno"] for p in cola], [1, 2])
+        self.assertEqual(cola[0]["items"][0]["producto"], self.cafe.id)
+        # Sin cobrar no entra plata al cuadre
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["entradas"], 0)
+        # Entregado pero sin cobrar: sigue en la cola
+        self.ok(self.c.post(f"/api/pedidos/{p1['id']}/entregar/"))
+        self.assertEqual(len(self.ok(self.c.get("/api/pedidos/"))), 2)
+        # Cobrar con cambio
+        v = self.ok(self.c.post(f"/api/ventas/{p1['id']}/cobrar/", {"pagos": [{"medio": "EFECTIVO", "monto": 4000}],
+                                                                    "efectivo_recibido": 5000}, format="json"))
+        self.assertEqual((v["estado"], v["cambio"]), ("PAGADA", 1000))
+        self.assertEqual([p["id"] for p in self.ok(self.c.get("/api/pedidos/"))], [p2["id"]])
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["total_por_medio"]["EFECTIVO"], 4000)
+        # Cobrar dos veces no se puede
+        self.assertEqual(self.c.post(f"/api/ventas/{p1['id']}/cobrar/", {"pagos": [{"medio": "EFECTIVO", "monto": 1}]}, format="json").status_code, 400)
+        # Cobrar dejando saldo exige cliente (fiado)
+        r = self.c.post(f"/api/ventas/{p2['id']}/cobrar/", {"pagos": [{"medio": "NEQUI", "monto": 1000}]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        cli = self.ok(self.c.post("/api/clientes/", {"nombre": "Leo"}, format="json"), 201)
+        v = self.ok(self.c.post(f"/api/ventas/{p2['id']}/cobrar/", {"pagos": [{"medio": "NEQUI", "monto": 1000}], "cliente": cli["id"]}, format="json"))
+        self.assertEqual((v["estado"], v["saldo_pendiente"]), ("FIADO", 2000))
+        # El reporte cuenta los pedidos como venta
+        self.login("dueno")
+        self.assertEqual(self.ok(self.c.get("/api/reportes/resumen/"))["ventas_netas"], 7000)
+
+    def test_editar_pedido_abierto_ajusta_inventario(self):
+        self.login("cajero")
+        self.stock_admin(self.cafe, 10)
+        p = self.venta(registrar=True)
+        self.cafe.refresh_from_db(); self.assertEqual(self.cafe.stock, 8)
+        v = self.ok(self.c.post(f"/api/ventas/{p['id']}/editar/", {"items": [{"producto": self.cafe.id, "cantidad": 3},
+                                                                           {"producto": self.pan.id, "cantidad": 1}], "nota": "sin azúcar"}, format="json"))
+        self.assertEqual((v["total"], v["nota"]), (9000, "sin azúcar"))
+        self.cafe.refresh_from_db(); self.assertEqual(self.cafe.stock, 7)
+        # El cajero no puede cambiar pagos ni fecha, ni editar una venta ya cobrada
+        self.assertEqual(self.c.post(f"/api/ventas/{p['id']}/editar/", {"items": [{"producto": self.cafe.id}], "fecha": str(hoy())}, format="json").status_code, 403)
+        self.ok(self.c.post(f"/api/ventas/{p['id']}/cobrar/", {"pagos": [{"medio": "EFECTIVO", "monto": 9000}]}, format="json"))
+        self.assertEqual(self.c.post(f"/api/ventas/{p['id']}/editar/", {"items": [{"producto": self.cafe.id}]}, format="json").status_code, 403)
+        # Cancelar (eliminar) un pedido abierto sí puede el cajero
+        p2 = self.venta(registrar=True)
+        self.ok(self.c.post(f"/api/ventas/{p2['id']}/eliminar/", {"motivo": "el cliente se fue"}, format="json"))
+        self.cafe.refresh_from_db(); self.assertEqual(self.cafe.stock, 7)
+
+    def stock_admin(self, p, n):
+        actual = self.c._credentials.get("HTTP_AUTHORIZATION")
+        self.login("dueno"); self.stock(p, n)
+        self.c.credentials(HTTP_AUTHORIZATION=actual)
+
+    def test_ventas_de_dias_anteriores(self):
+        self.login("dueno")
+        ayer = hoy() - dt.timedelta(days=1)
+        v = self.venta(pagos=[{"medio": "NEQUI", "monto": 4000}], fecha=str(ayer))
+        self.assertIsNone(v["turno"])  # no pasa por la cola
+        self.assertEqual(self.ok(self.c.get(f"/api/caja/dia/?fecha={ayer}"))["total_por_medio"]["NEQUI"], 4000)
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["entradas"], 0)
+        self.assertEqual(self.ok(self.c.get(f"/api/reportes/resumen/?desde={ayer}&hasta={ayer}"))["ventas_netas"], 4000)
+        # Editarla: más cantidad y cambiar a efectivo -> el dinero sigue en ayer
+        e = self.ok(self.c.post(f"/api/ventas/{v['id']}/editar/", {"items": [{"producto": self.cafe.id, "cantidad": 3}],
+                                                                  "pagos": [{"medio": "EFECTIVO", "monto": 6000}]}, format="json"))
+        self.assertEqual(e["total"], 6000)
+        dia = self.ok(self.c.get(f"/api/caja/dia/?fecha={ayer}"))
+        self.assertEqual((dia["total_por_medio"]["EFECTIVO"], dia["total_por_medio"]["NEQUI"]), (6000, 0))
+        # Moverla a anteayer
+        antes = hoy() - dt.timedelta(days=2)
+        self.ok(self.c.post(f"/api/ventas/{v['id']}/editar/", {"items": [{"producto": self.cafe.id, "cantidad": 3}],
+                                                              "pagos": [{"medio": "EFECTIVO", "monto": 6000}], "fecha": str(antes)}, format="json"))
+        self.assertEqual(self.ok(self.c.get(f"/api/caja/dia/?fecha={antes}"))["entradas"], 6000)
+        self.assertEqual(self.ok(self.c.get(f"/api/caja/dia/?fecha={ayer}"))["entradas"], 0)
+        # Eliminarla la saca de ese día
+        self.ok(self.c.post(f"/api/ventas/{v['id']}/eliminar/", {}, format="json"))
+        self.assertEqual(self.ok(self.c.get(f"/api/caja/dia/?fecha={antes}"))["entradas"], 0)
+        self.assertEqual(self.ok(self.c.get(f"/api/reportes/resumen/?desde={antes}&hasta={antes}"))["ventas_netas"], 0)
+        # Fecha futura o cajero con fecha: no
+        self.assertEqual(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}], "pagos": [{"medio": "EFECTIVO", "monto": 2000}],
+                                                      "fecha": str(hoy() + dt.timedelta(days=1))}, format="json").status_code, 400)
+        self.login("cajero")
+        self.assertEqual(self.c.post("/api/ventas/", {"items": [{"producto": self.cafe.id}], "pagos": [{"medio": "EFECTIVO", "monto": 2000}],
+                                                      "fecha": str(ayer)}, format="json").status_code, 403)
+
+    def test_deuda_anterior_no_es_venta(self):
+        self.login("dueno")
+        cli = self.ok(self.c.post("/api/clientes/", {"nombre": "Marta"}, format="json"), 201)
+        hace = hoy() - dt.timedelta(days=20)
+        self.ok(self.c.post(f"/api/clientes/{cli['id']}/deuda-anterior/", {"monto": 35000, "fecha": str(hace), "nota": "Cuaderno"}, format="json"), 201)
+        self.assertEqual(self.ok(self.c.get("/api/clientes/deudores/"))["total_cartera"], 35000)
+        res = self.ok(self.c.get(f"/api/reportes/resumen/?desde={hace}&hasta={hoy()}"))
+        self.assertEqual(res["ventas_netas"], 0)
+        self.assertEqual(res["cartera_total"], 35000)
+        # Se abona como cualquier fiado
+        r = self.ok(self.c.post(f"/api/clientes/{cli['id']}/abonar/", {"monto": 35000, "medio": "EFECTIVO"}, format="json"), 201)
+        self.assertEqual(r["saldo_cliente"], 0)
+
+
+class GastosComprasYCreditosAnteriores(Base):
+    def setUp(self):
+        super().setUp()
+        self.neg.usa_caja = False
+        self.neg.save()
+
+    def test_gasto_y_compra_de_dias_anteriores(self):
+        self.login("dueno")
+        ayer = hoy() - dt.timedelta(days=1)
+        cats = self.ok(self.c.get("/api/categorias-gasto/"))
+        g = self.ok(self.c.post("/api/gastos/", {"categoria": cats[0]["id"], "descripcion": "Gas", "monto": 30000, "fecha": str(ayer)}, format="json"), 201)
+        self.assertEqual(self.ok(self.c.get(f"/api/caja/dia/?fecha={ayer}"))["salidas"], 30000)
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["salidas"], 0)
+        # Anular el gasto lo saca de ese día
+        self.ok(self.c.post(f"/api/gastos/{g['id']}/anular/"))
+        self.assertEqual(self.ok(self.c.get(f"/api/caja/dia/?fecha={ayer}"))["salidas"], 0)
+        # Compra por valor total: 30 unidades por $45.000 -> $1.500 c/u
+        c = self.ok(self.c.post("/api/compras/", {"fecha": str(ayer), "items": [{"producto": self.cafe.id, "cantidad": 30, "total": 45000}]}, format="json"), 201)
+        self.assertEqual(c["total"], 45000)
+        self.assertEqual(c["detalles"][0]["costo_unitario"], 1500)
+        self.cafe.refresh_from_db()
+        self.assertEqual((self.cafe.stock, self.cafe.costo), (30, Decimal("1500.00")))
+        self.assertEqual(self.ok(self.c.get(f"/api/caja/dia/?fecha={ayer}"))["salidas"], 45000)
+
+    def test_borrar_credito_limpia_el_cuadre(self):
+        self.login("dueno")
+        cr = self.ok(self.c.post("/api/creditos/", {"entidad": "Banco", "monto": 1_000_000, "tasa": 24, "num_cuotas": 6,
+                     "fecha_desembolso": str(hoy()), "fecha_primera_cuota": str(hoy() + dt.timedelta(days=30)),
+                     "desembolso_a_caja": True, "medio_desembolso": "EFECTIVO"}, format="json"), 201)
+        self.ok(self.c.post(f"/api/creditos/{cr['id']}/pagar/", {"monto": cr["cuota_valor"]}, format="json"), 201)
+        origenes = self.ok(self.c.get("/api/caja/dia/"))["detalle_por_origen"]
+        self.assertIn("DESEMBOLSO_CREDITO", origenes)
+        self.assertIn("PAGO_CREDITO", origenes)
+        self.ok(self.c.post(f"/api/creditos/{cr['id']}/eliminar/"))
+        dia = self.ok(self.c.get("/api/caja/dia/"))
+        self.assertEqual(dia["detalle_por_origen"], {})
+        self.assertEqual(dia["entradas"], 0)
+        # Borrado desde el admin de Django también limpia
+        cr2 = self.ok(self.c.post("/api/creditos/", {"entidad": "Coop", "monto": 500000, "tasa": 24, "num_cuotas": 3,
+                      "fecha_desembolso": str(hoy()), "fecha_primera_cuota": str(hoy() + dt.timedelta(days=30)),
+                      "desembolso_a_caja": True, "medio_desembolso": "EFECTIVO"}, format="json"), 201)
+        Credito.objects.get(pk=cr2["id"]).delete()
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["entradas"], 0)
+
+
+class Mesas(Base):
+    def test_pedidos_por_mesa_y_para_llevar(self):
+        self.neg.num_mesas = 5
+        self.neg.save()
+        self.login("cajero")
+        self.abrir_caja()
+        items = [{"producto": self.cafe.id}]
+        m3 = self.ok(self.c.post("/api/ventas/", {"items": items, "registrar": True, "mesa": "3"}, format="json"), 201)
+        ll = [self.ok(self.c.post("/api/ventas/", {"items": items, "registrar": True, "mesa": "LLEVAR"}, format="json"), 201) for _ in range(7)]
+        self.assertEqual((m3["mesa"], ll[0]["mesa"]), ("3", "LLEVAR"))
+        self.assertEqual(len(self.ok(self.c.get("/api/pedidos/"))), 8)  # sin límite por mesas
+        self.assertEqual(self.c.post("/api/ventas/", {"items": items, "registrar": True, "mesa": "6"}, format="json").status_code, 400)
+        e = self.ok(self.c.post(f"/api/ventas/{m3['id']}/editar/", {"items": items, "mesa": "LLEVAR"}, format="json"))
+        self.assertEqual(e["mesa"], "LLEVAR")

@@ -1,10 +1,87 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Share2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Pencil, Plus, Share2 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
-import { hoyISO, MEDIOS, pesos } from "../lib/formato";
+import { hoyISO, MEDIOS, numero, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
+import Cobro from "../components/Cobro";
+import EditorVenta from "../components/EditorVenta";
 import { Aviso, Boton, Hoja, InputPesos } from "../components/ui";
+
+const ESTADO = {
+  ABIERTA: ["Por cobrar", "bg-precio-claro text-texto"],
+  FIADO: ["Fiado", "bg-precio-claro text-texto"],
+  ANULADA: ["Eliminada", "bg-fondo text-suave"],
+};
+
+/** Una venta del día: una línea resumida que se despliega con todo lo que se vendió. */
+function FilaVenta({ v, negocio, esAdmin, abierta, onAbrir, onEditar, onCobrar }) {
+  const anulada = v.estado === "ANULADA";
+  const saldoAnterior = v.origen === "SALDO_ANTERIOR";
+  const [etq, cls] = saldoAnterior ? ["Deuda anterior", "bg-fondo text-suave"] : ESTADO[v.estado] || [];
+  const hora = new Date(v.creado).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" });
+  const puedeEditar = !anulada && !saldoAnterior && (esAdmin || v.estado === "ABIERTA");
+  const pagos = v.pagos.filter((p) => !p.es_abono);
+  const abonos = v.pagos.filter((p) => p.es_abono);
+  const resumen = saldoAnterior ? v.nota : v.detalles.map((d) => `${numero(d.cantidad)} ${d.nombre}`).join(", ");
+  return (
+    <li className={anulada ? "opacity-60" : ""}>
+      <button onClick={onAbrir} aria-expanded={abierta} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-fondo/60">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">
+            #{v.numero} <span className="text-sm font-normal text-suave">{hora}{v.turno ? ` · turno ${v.turno}` : ""}{v.mesa ? ` · ${v.mesa === "LLEVAR" ? "para llevar" : `mesa ${v.mesa}`}` : ""}</span>
+          </p>
+          <p className={`text-sm text-suave ${abierta ? "" : "truncate"}`}>{anulada ? `Eliminada: ${v.motivo_anulacion}` : resumen}</p>
+        </div>
+        {etq && <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${cls}`}>{etq}</span>}
+        <span className="shrink-0 font-semibold num">{pesos(v.total)}</span>
+        <ChevronDown size={18} className={`shrink-0 text-suave transition-transform ${abierta ? "rotate-180" : ""}`} aria-hidden />
+      </button>
+      {abierta && (
+        <div className="border-t border-dashed border-linea bg-fondo/50 px-4 pb-4 pt-3 text-sm">
+          {v.detalles.length > 0 && (
+            <table className="w-full">
+              <tbody>
+                {v.detalles.map((d, i) => (
+                  <tr key={i}>
+                    <td className="py-1 pr-2 align-top font-semibold num">{numero(d.cantidad)}×</td>
+                    <td className="w-full py-1">{d.nombre} <span className="text-suave num">({pesos(d.precio_unitario)} c/u)</span></td>
+                    <td className="py-1 text-right num">{pesos(d.subtotal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div className="mt-2 space-y-1 border-t border-linea pt-2">
+            {Number(v.descuento) > 0 && <p className="flex justify-between text-suave"><span>Descuento</span><span className="num">−{pesos(v.descuento)}</span></p>}
+            <p className="flex justify-between font-semibold"><span>Total</span><span className="num">{pesos(v.total)}</span></p>
+            {pagos.map((p, i) => <p key={i} className="flex justify-between text-suave"><span>{MEDIOS[p.medio]}</span><span className="num">{pesos(p.monto)}</span></p>)}
+            {abonos.length > 0 && <p className="flex justify-between text-suave"><span>Abonos de fiado</span><span className="num">{pesos(abonos.reduce((s, p) => s + Number(p.monto), 0))}</span></p>}
+            {Number(v.cambio) > 0 && <p className="flex justify-between text-suave"><span>Cambio</span><span className="num">{pesos(v.cambio)}</span></p>}
+            {Number(v.saldo_pendiente) > 0 && v.estado !== "ABIERTA" && <p className="flex justify-between font-semibold text-alerta"><span>Debe</span><span className="num">{pesos(v.saldo_pendiente)}</span></p>}
+          </div>
+          <p className="mt-2 text-suave">
+            {v.cliente_nombre ? `Cliente: ${v.cliente_nombre} · ` : ""}Registró: {v.usuario}{v.editada_en ? " · editada" : ""}
+          </p>
+          {v.nota && !saldoAnterior && <p className="mt-1 rounded-lg bg-precio-claro px-3 py-2">{v.nota}</p>}
+          {!anulada && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {v.estado === "ABIERTA" && <Boton variante="ok" className="py-2 text-sm" onClick={onCobrar}>Cobrar</Boton>}
+              {puedeEditar && <Boton variante="borde" className="py-2 text-sm" onClick={onEditar}><Pencil size={15} aria-hidden /> Editar o eliminar</Boton>}
+              {!saldoAnterior && (
+                <a href={`https://wa.me/?text=${encodeURIComponent(`Recibo #${v.numero} de ${negocio.nombre}: ${window.location.origin}/r/${v.token_publico}`)}`}
+                  target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-lg border border-linea bg-papel px-3 py-2 font-semibold text-tinta hover:bg-fondo">
+                  <Share2 size={15} aria-hidden /> Enviar recibo
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
 
 const ORIGENES = {
   VENTA: "Ventas",
@@ -71,6 +148,10 @@ export default function Hoy() {
   const { negocio, esAdmin } = useSesion();
   const [fecha, setFecha] = useState(hoyISO());
   const [cerrando, setCerrando] = useState(false);
+  const [abierta, setAbierta] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [cobrando, setCobrando] = useState(null);
+  const qc = useQueryClient();
 
   const { data: dia, isLoading, error } = useQuery({
     queryKey: ["caja", "dia", fecha],
@@ -86,7 +167,7 @@ export default function Hoy() {
     enabled: Boolean(negocio?.usa_caja),
   });
 
-  const validas = ventas.filter((v) => v.estado !== "ANULADA");
+  const validas = ventas.filter((v) => v.estado !== "ANULADA" && v.origen !== "SALDO_ANTERIOR");
   const vendido = validas.reduce((s, v) => s + Number(v.total), 0);
   const medios = dia ? Object.entries(dia.total_por_medio).filter(([, v]) => Number(v) !== 0) : [];
   const origenes = dia ? Object.entries(dia.detalle_por_origen) : [];
@@ -165,41 +246,34 @@ export default function Hoy() {
       )}
 
       <section className="mt-6">
-        <h2 className="font-display text-lg font-bold text-tinta">Ventas</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-display text-lg font-bold text-tinta">Ventas</h2>
+          {esAdmin && fecha < hoyISO() && (
+            <Link to={`/vender?fecha=${fecha}`} className="inline-flex items-center gap-1.5 rounded-lg bg-tinta px-3 py-2 text-sm font-semibold text-white">
+              <Plus size={16} aria-hidden /> Registrar venta de este día
+            </Link>
+          )}
+        </div>
         {ventas.length === 0 ? (
           <p className="mt-3 rounded-xl bg-papel p-4 text-suave">No hay ventas registradas este día.</p>
         ) : (
-          <ul className="mt-3 divide-y divide-linea rounded-xl bg-papel">
+          <ul className="mt-3 divide-y divide-linea overflow-hidden rounded-xl bg-papel">
             {ventas.map((v) => (
-              <li key={v.id} className={`flex items-center gap-3 px-4 py-3 ${v.estado === "ANULADA" ? "opacity-50" : ""}`}>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">
-                    #{v.numero}{" "}
-                    <span className="text-sm font-normal text-suave">
-                      {new Date(v.creado).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" })}
-                    </span>
-                  </p>
-                  <p className="truncate text-sm text-suave">
-                    {v.estado === "ANULADA" ? "Anulada" : v.detalles.map((d) => d.nombre).join(", ")}
-                  </p>
-                </div>
-                {v.estado === "FIADO" && <span className="rounded-full bg-precio-claro px-2.5 py-1 text-xs font-semibold">Fiado</span>}
-                <span className="font-semibold num">{pesos(v.total)}</span>
-                <a
-                  href={`https://wa.me/?text=${encodeURIComponent(`Recibo #${v.numero} de ${negocio.nombre}: ${window.location.origin}/r/${v.token_publico}`)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-lg p-2 text-suave hover:bg-fondo hover:text-tinta"
-                  aria-label={`Enviar recibo ${v.numero}`}
-                >
-                  <Share2 size={18} />
-                </a>
-              </li>
+              <FilaVenta key={v.id} v={v} negocio={negocio} esAdmin={esAdmin} abierta={abierta === v.id}
+                onAbrir={() => setAbierta(abierta === v.id ? null : v.id)}
+                onEditar={() => setEditando(v)} onCobrar={() => setCobrando(v)} />
             ))}
           </ul>
         )}
       </section>
 
+      {editando && <EditorVenta venta={editando} onCerrar={() => setEditando(null)} />}
+      {cobrando && (
+        <Cobro ventaId={cobrando.id} total={Number(cobrando.total)} detalle={cobrando.detalles} negocio={negocio}
+          titulo={`Cobrar #${cobrando.numero}`}
+          onListo={() => { setCobrando(null); ["ventas", "caja", "pedidos"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })); }}
+          onCerrar={() => setCobrando(null)} />
+      )}
       {cerrando && caja?.resumen && <CerrarCaja resumen={caja.resumen} onCerrar={() => setCerrando(false)} />}
     </div>
   );

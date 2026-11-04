@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { CheckCircle2, Minus, Plus, Search, Share2, ShoppingBasket, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
-import { numero, pesos } from "../lib/formato";
+import { fechaCorta, hoyISO, numero, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
+import { useCarrito } from "../context/Carrito";
 import Cobro from "../components/Cobro";
 import { Aviso, Boton, Hoja, InputPesos } from "../components/ui";
 
@@ -49,8 +50,8 @@ function Etiqueta({ p, cantidad, onAgregar, conFotos }) {
 
 /* ---------- La cuenta, con forma de recibo ---------- */
 function Cuenta({
-  lineas, subtotal, descuento, total, onCantidad, onQuitar, onDescuento, onVaciar, onCobrar, puedeVender,
-  nota, onNota, usaCola, entregarYa, onEntregarYa,
+  lineas, subtotal, descuento, total, onCantidad, onQuitar, onDescuento, onVaciar, onAccion, textoAccion, puedeVender,
+  nota, onNota, usaCola, entregarYa, onEntregarYa, numMesas, mesa, onMesa, enviando,
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -108,11 +109,26 @@ function Cuenta({
       <div className="bg-papel px-4 pb-4">
         {lineas.length > 0 && (
           <div className="space-y-2 border-t border-dashed border-linea pt-3 text-sm">
+            {usaCola && (
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Dónde se entrega">
+                {[["LLEVAR", "Para llevar"], ...Array.from({ length: numMesas }, (_, i) => [String(i + 1), `Mesa ${i + 1}`])].map(([v, t]) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => onMesa(mesa === v ? "" : v)}
+                    aria-pressed={mesa === v}
+                    className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${mesa === v ? "border-tinta bg-tinta text-white" : "border-linea bg-papel text-tinta"}`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
             <input
               value={nota}
               onChange={(e) => onNota(e.target.value)}
               maxLength={200}
-              placeholder="Nota del pedido (ej. sin azúcar, para llevar)"
+              placeholder="Nota del pedido (ej. sin azúcar)"
               className="w-full rounded-lg border border-linea px-3 py-2.5 outline-none focus:border-tinta"
               aria-label="Nota del pedido"
             />
@@ -136,10 +152,10 @@ function Cuenta({
         <Boton
           variante="ok"
           className="mt-4 w-full py-4 text-lg"
-          disabled={!lineas.length || total < 0 || !puedeVender}
-          onClick={onCobrar}
+          disabled={!lineas.length || total < 0 || !puedeVender || enviando}
+          onClick={onAccion}
         >
-          Cobrar
+          {enviando ? "Registrando…" : textoAccion}
         </Boton>
       </div>
       <div className="filo-recibo" aria-hidden />
@@ -166,7 +182,26 @@ function AbrirCaja({ onCerrar }) {
 }
 
 /* ---------- Venta registrada ---------- */
-function VentaLista({ venta, onNueva }) {
+function VentaLista({ venta, onNueva, onCobrar }) {
+  if (venta.estado === "ABIERTA") {
+    return (
+      <Hoja titulo="Pedido registrado" onCerrar={onNueva}>
+        <div className="text-center">
+          <CheckCircle2 size={44} className="mx-auto text-ok" aria-hidden />
+          <p className="mx-auto mt-3 w-fit rounded-xl bg-precio px-5 py-2 text-tinta">
+            Turno <span className="font-display text-3xl font-extrabold num">{venta.turno}</span>
+          </p>
+          {venta.mesa && <p className="mt-2 font-semibold">{venta.mesa === "LLEVAR" ? "Para llevar" : `Mesa ${venta.mesa}`}</p>}
+          <p className="mt-1 font-display text-3xl font-extrabold text-tinta num">{pesos(venta.total)}</p>
+          <p className="mt-1 text-suave">Quedó en Pedidos. Lo puedes cobrar ahora o cuando el cliente pague.</p>
+        </div>
+        <div className="mt-6 grid gap-2 sm:grid-cols-2">
+          <Boton variante="borde" onClick={onNueva} data-autofocus>Nuevo pedido</Boton>
+          <Boton variante="ok" onClick={onCobrar}>Cobrar ahora</Boton>
+        </div>
+      </Hoja>
+    );
+  }
   return (
     <Hoja titulo="Venta registrada" onCerrar={onNueva}>
       <div className="text-center">
@@ -203,13 +238,15 @@ function VentaLista({ venta, onNueva }) {
 export default function Vender() {
   const { negocio, esAdmin, tieneModulo } = useSesion();
   const qc = useQueryClient();
+  const [params, setParams] = useSearchParams();
   const [categoria, setCategoria] = useState("todas");
   const [busqueda, setBusqueda] = useState("");
-  const [carrito, setCarrito] = useState({}); // id -> cantidad
-  const [descuento, setDescuento] = useState(0);
-  const [nota, setNota] = useState("");
-  const [entregarYa, setEntregarYa] = useState(false);
+  // El pedido en curso vive en el contexto: no se pierde al cambiar de pestaña ni al recargar
+  const { carrito, setCarrito, descuento, setDescuento, nota, setNota, entregarYa, setEntregarYa, mesa, setMesa, vaciar } = useCarrito();
   const [cobrando, setCobrando] = useState(false);
+  const [cobrandoPedido, setCobrandoPedido] = useState(null);
+  // Venta de un día anterior (solo el dueño): /vender?fecha=2026-10-30
+  const fecha = esAdmin && params.get("fecha") && params.get("fecha") < hoyISO() ? params.get("fecha") : null;
   const [cuentaMovil, setCuentaMovil] = useState(false);
   const [abrirCaja, setAbrirCaja] = useState(false);
   const [ventaLista, setVentaLista] = useState(null);
@@ -251,19 +288,26 @@ export default function Vender() {
       else copia[id] = n;
       return copia;
     });
-  const vaciar = () => { setCarrito({}); setDescuento(0); setNota(""); setEntregarYa(false); };
   const usaCola = tieneModulo("pedidos") && negocio?.usa_cola_pedidos;
+  const registrarPrimero = usaCola && !fecha; // con cola: se registra el pedido y se cobra después
 
+  const refrescar = () => ["productos", "caja", "clientes", "pedidos", "ventas", "reportes"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
   const alVender = (venta) => {
     setCobrando(false);
+    setCobrandoPedido(null);
     setCuentaMovil(false);
     setVentaLista(venta);
     vaciar();
-    qc.invalidateQueries({ queryKey: ["productos"] });
-    qc.invalidateQueries({ queryKey: ["caja"] });
-    qc.invalidateQueries({ queryKey: ["clientes"] });
-    qc.invalidateQueries({ queryKey: ["pedidos"] });
+    refrescar();
   };
+  const itemsPedido = () => lineas.map(({ p, cantidad }) => ({ producto: p.id, cantidad }));
+  const registrar = useMutation({
+    mutationFn: () => api("/ventas/", {
+      method: "POST",
+      body: { items: itemsPedido(), registrar: true, descuento, nota, mesa, entregar_ya: entregarYa },
+    }),
+    onSuccess: alVender,
+  });
 
   const propsCuenta = {
     lineas, subtotal, descuento, total,
@@ -271,16 +315,28 @@ export default function Vender() {
     onQuitar: (id) => fijarCantidad(id, 0),
     onDescuento: (v) => setDescuento(Math.min(v, subtotal)),
     onVaciar: vaciar,
-    onCobrar: () => setCobrando(true),
-    puedeVender: !cajaCerrada,
-    nota, onNota: setNota, usaCola, entregarYa, onEntregarYa: setEntregarYa,
+    onAccion: () => (registrarPrimero ? registrar.mutate() : setCobrando(true)),
+    textoAccion: registrarPrimero ? "Registrar pedido" : fecha ? `Cobrar venta del ${fechaCorta(fecha)}` : "Cobrar",
+    enviando: registrar.isPending,
+    puedeVender: registrarPrimero || !cajaCerrada,
+    nota, onNota: setNota, usaCola: registrarPrimero, entregarYa, onEntregarYa: setEntregarYa,
+    numMesas: negocio?.num_mesas || 0, mesa, onMesa: setMesa,
   };
 
   return (
     <div className="lg:grid lg:h-dvh lg:grid-cols-[1fr_380px]">
       {/* Catálogo */}
       <section className="min-w-0 px-4 pt-4 lg:overflow-y-auto lg:px-6 lg:pt-6">
-        {cajaCerrada && (
+        {fecha && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-precio-claro px-4 py-3">
+            <p className="font-medium">
+              Estás registrando una venta del <strong className="capitalize">{fechaCorta(fecha, { dia: true, anio: true })}</strong>. Su dinero queda en el cuadre de ese día.
+            </p>
+            <Boton variante="borde" onClick={() => setParams({})} className="py-2">Volver a hoy</Boton>
+          </div>
+        )}
+        {registrar.error && <div className="mb-4"><Aviso>{registrar.error.message}</Aviso></div>}
+        {cajaCerrada && !registrarPrimero && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-precio-claro px-4 py-3">
             <p className="font-medium">La caja está cerrada. Ábrela para empezar a vender.</p>
             <Boton onClick={() => setAbrirCaja(true)} className="py-2">Abrir caja</Boton>
@@ -359,7 +415,7 @@ export default function Vender() {
         </div>
       )}
       {cuentaMovil && (
-        <Hoja titulo="Revisar venta" onCerrar={() => setCuentaMovil(false)}>
+        <Hoja titulo={registrarPrimero ? "Revisar pedido" : "Revisar venta"} onCerrar={() => setCuentaMovil(false)}>
           <div className="-mx-5 -mb-5 bg-fondo px-3 pb-3 pt-1">
             <Cuenta {...propsCuenta} />
           </div>
@@ -372,13 +428,30 @@ export default function Vender() {
           descuento={descuento}
           negocio={negocio}
           items={lineas.map(({ p, cantidad }) => ({ producto: p.id, cantidad }))}
-          extra={{ nota, entregar_ya: entregarYa }}
+          extra={{ nota, entregar_ya: entregarYa, mesa, ...(fecha ? { fecha } : {}) }}
           onListo={alVender}
           onCerrar={() => setCobrando(false)}
         />
       )}
+      {cobrandoPedido && (
+        <Cobro
+          ventaId={cobrandoPedido.id}
+          total={Number(cobrandoPedido.total)}
+          detalle={cobrandoPedido.detalles}
+          titulo={`Cobrar turno ${cobrandoPedido.turno}`}
+          negocio={negocio}
+          onListo={alVender}
+          onCerrar={() => setCobrandoPedido(null)}
+        />
+      )}
       {abrirCaja && <AbrirCaja onCerrar={() => setAbrirCaja(false)} />}
-      {ventaLista && <VentaLista venta={ventaLista} onNueva={() => setVentaLista(null)} />}
+      {ventaLista && (
+        <VentaLista
+          venta={ventaLista}
+          onNueva={() => setVentaLista(null)}
+          onCobrar={() => { setCobrandoPedido(ventaLista); setVentaLista(null); }}
+        />
+      )}
     </div>
   );
 }

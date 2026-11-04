@@ -61,26 +61,28 @@ class Command(BaseCommand):
 
         # Historial de 14 días para que reportes y créditos muestren tendencias
         import random
-        from django.utils import timezone
         from gastos.models import CategoriaGasto, CATEGORIAS_GASTO_DEFECTO, Gasto
-        from ventas.models import Cliente, Venta
+        from ventas.models import Cliente
 
         rnd = random.Random(7)
-        ahora = timezone.now()
         for dias in range(1, 14):
             for _ in range(rnd.randint(14, 26)):
                 p1, p2 = rnd.choice(prods), rnd.choice(prods)
                 total = p1.precio * 2 + p2.precio
-                v = crear_venta(n, dueno, [{"producto": p1.id, "cantidad": 2}, {"producto": p2.id, "cantidad": 1}],
-                                [{"medio": rnd.choice(["EFECTIVO", "EFECTIVO", "NEQUI", "DAVIPLATA"]), "monto": total}],
-                                entregar_ya=True)
-                Venta.objects.filter(pk=v.pk).update(creado=ahora - dt.timedelta(days=dias, minutes=rnd.randint(0, 600)))
+                crear_venta(n, dueno, [{"producto": p1.id, "cantidad": 2}, {"producto": p2.id, "cantidad": 1}],
+                            [{"medio": rnd.choice(["EFECTIVO", "EFECTIVO", "NEQUI", "DAVIPLATA"]), "monto": total}],
+                            fecha=hoy() - dt.timedelta(days=dias))
         cats = {c.nombre: c for c in CategoriaGasto.objects.bulk_create(
             [CategoriaGasto(negocio=n, nombre=x) for x in CATEGORIAS_GASTO_DEFECTO])}
         for dias, cat, desc, monto in [(12, "Arriendo", "Arriendo del local", 900000), (9, "Servicios públicos", "Luz y agua", 180000),
                                        (5, "Transporte", "Domicilios de insumos", 35000), (2, "Aseo", "Productos de aseo", 42000)]:
-            Gasto.objects.create(negocio=n, categoria=cats[cat], descripcion=desc, monto=monto, usuario=dueno,
-                                 fecha=hoy() - dt.timedelta(days=dias), pagado_de_caja=False)
+            fecha_gasto = hoy() - dt.timedelta(days=dias)
+            g = Gasto.objects.create(negocio=n, categoria=cats[cat], descripcion=desc, monto=monto, usuario=dueno,
+                                     fecha=fecha_gasto, medio="EFECTIVO")
+            from caja import servicios as caja_srv
+            from negocios.utils import momento_en
+            caja_srv.registrar(n, "GASTO", -g.monto, concepto=desc, referencia=f"gasto:{g.id}", usuario=dueno,
+                               momento=momento_en(fecha_gasto))
         marta = Cliente.objects.create(negocio=n, nombre="Doña Marta", telefono="3001234567")
         crear_venta(n, dueno, [{"producto": prods[1].id, "cantidad": 3}, {"producto": prods[4].id, "cantidad": 2}],
                     [], cliente=marta, entregar_ya=True)

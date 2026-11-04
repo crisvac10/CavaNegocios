@@ -1,4 +1,5 @@
 from django.db.models import Q, Sum
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import mixins, serializers, viewsets
@@ -45,7 +46,7 @@ class VentaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Venta
-        fields = ["id", "numero", "turno", "entregado_en", "estado", "cliente", "cliente_nombre", "usuario", "subtotal", "descuento",
+        fields = ["id", "numero", "turno", "mesa", "entregado_en", "estado", "origen", "editada_en", "cliente", "cliente_nombre", "usuario", "subtotal", "descuento",
                   "total", "saldo_pendiente", "efectivo_recibido", "cambio", "nota", "utilidad",
                   "detalles", "pagos", "motivo_anulacion", "token_publico", "creado"]
 
@@ -74,6 +75,32 @@ class VentaEntrada(serializers.Serializer):
     efectivo_recibido = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
     nota = serializers.CharField(required=False, allow_blank=True, default="")
     entregar_ya = serializers.BooleanField(required=False, default=False)
+    registrar = serializers.BooleanField(required=False, default=False)
+    mesa = serializers.CharField(required=False, allow_blank=True, default="", max_length=12)
+    fecha = serializers.DateField(required=False, allow_null=True)
+
+
+class CobroEntrada(serializers.Serializer):
+    pagos = PagoEntrada(many=True, required=False, default=list)
+    cliente = serializers.IntegerField(required=False, allow_null=True)
+    efectivo_recibido = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
+
+
+class EdicionEntrada(serializers.Serializer):
+    items = ItemEntrada(many=True)
+    descuento = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
+    nota = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    pagos = PagoEntrada(many=True, required=False, allow_null=True, default=None)
+    cliente = serializers.IntegerField(required=False, allow_null=True)
+    fecha = serializers.DateField(required=False, allow_null=True)
+    efectivo_recibido = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
+    mesa = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=12)
+
+
+class DeudaAnteriorEntrada(serializers.Serializer):
+    monto = serializers.DecimalField(max_digits=14, decimal_places=2)
+    fecha = serializers.DateField(required=False, allow_null=True)
+    nota = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 # ---------- Vistas ----------
@@ -127,6 +154,14 @@ class ClienteViewSet(TenantMixin, viewsets.ModelViewSet):
         return Response({"cliente": ClienteSerializer(c).data,
                          "ventas": VentaSerializer(ventas, many=True, context={"request": request}).data})
 
+    @action(detail=True, methods=["post"], url_path="deuda-anterior", permission_classes=PERMISOS_TENANT + [EsAdmin])
+    def deuda_anterior(self, request, pk=None):
+        """Lo que el cliente ya debía antes de usar la app (no cuenta como venta)."""
+        e = DeudaAnteriorEntrada(data=request.data)
+        e.is_valid(raise_exception=True)
+        v = servicios.deuda_anterior(self.negocio, request.user, self.get_object(), **e.validated_data)
+        return Response(VentaSerializer(v, context={"request": request}).data, status=201)
+
     @action(detail=True)
     def recordatorio(self, request, pk=None):
         c = self.get_object()
@@ -167,13 +202,68 @@ class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
             cliente = Cliente.objects.filter(negocio=self.negocio, pk=d["cliente"]).first()
             if not cliente:
                 return Response({"cliente": "No existe."}, status=400)
+        if d.get("fecha") and request.user.rol != "ADMIN":
+            raise PermissionDenied("Solo el administrador registra ventas de días anteriores.")
         venta = servicios.crear_venta(
             self.negocio, request.user, d["items"], d.get("pagos"), d.get("descuento"),
             cliente, d.get("efectivo_recibido"), d.get("nota", ""), d.get("entregar_ya", False),
+            registrar=d.get("registrar", False), fecha=d.get("fecha"), mesa=d.get("mesa", ""),
         )
         data = VentaSerializer(venta, context={"request": request}).data
         data["whatsapp_recibo"] = servicios.whatsapp_recibo(venta)
         return Response(data, status=201)
+
+    def _cliente(self, cid):
+        if not cid:
+            return None
+        c = Cliente.objects.filter(negocio=self.negocio, pk=cid).first()
+        if not c:
+            raise ValidationError({"cliente": "No existe."})
+        return c
+
+    def _puede_tocar(self, v):
+        """Pedidos por cobrar: cualquiera del negocio. Ventas ya cobradas o de otros días: solo el dueño."""
+        if self.request.user.rol == "ADMIN":
+            return
+        if v.estado != Venta.Estado.ABIERTA:
+            raise PermissionDenied("Solo el administrador puede cambiar una venta ya cobrada.")
+
+    def _respuesta(self, v, status=200):
+        data = VentaSerializer(v, context={"request": self.request}).data
+        data["whatsapp_recibo"] = servicios.whatsapp_recibo(v)
+        return Response(data, status=status)
+
+    @action(detail=True, methods=["post"])
+    def cobrar(self, request, pk=None):
+        """Cobra un pedido registrado: {pagos, cliente?, efectivo_recibido?}."""
+        e = CobroEntrada(data=request.data)
+        e.is_valid(raise_exception=True)
+        d = e.validated_data
+        v = servicios.cobrar_pedido(self.negocio, request.user, self.get_object(), d.get("pagos"),
+                                    self._cliente(d.get("cliente")), d.get("efectivo_recibido"))
+        return self._respuesta(v)
+
+    @action(detail=True, methods=["post"])
+    def editar(self, request, pk=None):
+        v = self.get_object()
+        self._puede_tocar(v)
+        e = EdicionEntrada(data=request.data)
+        e.is_valid(raise_exception=True)
+        d = e.validated_data
+        if (d.get("fecha") or d.get("pagos") is not None) and request.user.rol != "ADMIN":
+            raise PermissionDenied("Solo el administrador cambia la fecha o los pagos.")
+        v = servicios.editar_venta(self.negocio, request.user, v, d["items"], d.get("descuento"), d.get("nota"),
+                                   d.get("pagos"), self._cliente(d.get("cliente")), d.get("fecha"),
+                                   d.get("efectivo_recibido"), d.get("mesa"))
+        return self._respuesta(v)
+
+    @action(detail=True, methods=["post"])
+    def eliminar(self, request, pk=None):
+        """Borra una venta registrada por error (devuelve inventario y saca su dinero de ese día)."""
+        v = self.get_object()
+        self._puede_tocar(v)
+        v = servicios.eliminar_venta(self.negocio, request.user, v, request.data.get("motivo", ""))
+        return self._respuesta(v)
 
     @action(detail=True, methods=["post"], permission_classes=PERMISOS_TENANT + [EsAdmin])
     def anular(self, request, pk=None):
@@ -213,10 +303,12 @@ class PedidoViewSet(TenantMixin, viewsets.GenericViewSet):
     @staticmethod
     def _dato(v):
         return {
-            "id": v.id, "turno": v.turno, "numero": v.numero, "creado": v.creado, "entregado_en": v.entregado_en,
-            "cliente": v.cliente.nombre if v.cliente else None, "nota": v.nota, "total": v.total,
+            "id": v.id, "turno": v.turno, "numero": v.numero, "mesa": v.mesa, "creado": v.creado, "entregado_en": v.entregado_en,
+            "cliente": v.cliente.nombre if v.cliente else None, "cliente_id": v.cliente_id, "nota": v.nota,
+            "subtotal": v.subtotal, "descuento": v.descuento, "total": v.total, "saldo_pendiente": v.saldo_pendiente,
             "estado_pago": v.estado,
-            "items": [{"nombre": d.nombre, "cantidad": d.cantidad} for d in v.detalles.all()],
+            "items": [{"producto": d.producto_id, "nombre": d.nombre, "cantidad": d.cantidad,
+                       "precio_unitario": d.precio_unitario, "subtotal": d.subtotal} for d in v.detalles.all()],
         }
 
     def list(self, request):
@@ -226,7 +318,7 @@ class PedidoViewSet(TenantMixin, viewsets.GenericViewSet):
             ini, fin = rango_dia(hoy())
             qs = qs.filter(entregado_en__gte=ini, entregado_en__lt=fin).order_by("-entregado_en")[:60]
         else:
-            qs = qs.filter(entregado_en__isnull=True).order_by("creado")[:150]
+            qs = qs.filter(Q(entregado_en__isnull=True) | Q(estado=Venta.Estado.ABIERTA)).order_by("creado")[:150]
         return Response([self._dato(v) for v in qs])
 
     @action(detail=True, methods=["post"])

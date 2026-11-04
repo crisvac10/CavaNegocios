@@ -56,6 +56,7 @@ class Negocio(models.Model):
         default=False,
         help_text="Turnos de caja con apertura/cierre y arqueo. Si es False se vende directo y "
                   "el dinero se cuadra por día (cuadre diario).")
+    num_mesas = models.PositiveSmallIntegerField(default=0, help_text="Mesas del local (0 = no atiende en mesas)")
     usa_cola_pedidos = models.BooleanField(
         default=True, help_text="Cada venta entra a la cola como pendiente hasta marcarla entregada.")
     bloquear_sin_stock = models.BooleanField(default=False)

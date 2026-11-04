@@ -224,13 +224,15 @@ class CreditoViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMix
 
     @action(detail=True, methods=["post"])
     def cancelar(self, request, pk=None):
-        """Marca como cancelado un crédito registrado por error (si no tiene pagos)."""
+        """Crédito registrado por error: se borra con sus cuotas, pagos y su dinero en el cuadre."""
+        return self.eliminar(request, pk)
+
+    @action(detail=True, methods=["post"])
+    def eliminar(self, request, pk=None):
         cr = self.get_object()
-        if cr.pagos.exists():
-            raise ValidationError("Tiene pagos registrados; no se puede cancelar.")
-        cr.estado = Credito.Estado.CANCELADO
-        cr.save(update_fields=["estado"])
-        return Response(CreditoSerializer(cr).data)
+        nombre, pagos = cr.entidad, cr.pagos.count()
+        cr.delete()  # las señales quitan su desembolso y pagos del libro de caja
+        return Response({"eliminado": nombre, "pagos_quitados": pagos})
 
 
 class TasaUsuraSerializer(serializers.ModelSerializer):

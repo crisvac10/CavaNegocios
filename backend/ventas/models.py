@@ -24,11 +24,12 @@ class Cliente(TenantModel):
 
     @property
     def saldo_pendiente(self):
-        return self.ventas.exclude(estado=Venta.Estado.ANULADA).aggregate(s=Sum("saldo_pendiente"))["s"] or CERO
+        return self.ventas.filter(estado=Venta.Estado.FIADO).aggregate(s=Sum("saldo_pendiente"))["s"] or CERO
 
 
 class Venta(TenantModel):
     class Estado(models.TextChoices):
+        ABIERTA = "ABIERTA", "Por cobrar"
         PAGADA = "PAGADA", "Pagada"
         FIADO = "FIADO", "Fiado (saldo pendiente)"
         ANULADA = "ANULADA", "Anulada"
@@ -41,6 +42,13 @@ class Venta(TenantModel):
     cliente = models.ForeignKey(Cliente, on_delete=models.PROTECT, null=True, blank=True, related_name="ventas")
     estado = models.CharField(max_length=8, choices=Estado.choices, default=Estado.PAGADA)
 
+    class Origen(models.TextChoices):
+        POS = "POS", "Venta"
+        SALDO_ANTERIOR = "SALDO_ANTERIOR", "Deuda anterior"
+
+    origen = models.CharField(max_length=14, choices=Origen.choices, default=Origen.POS,
+                              help_text="SALDO_ANTERIOR: fiado de antes de usar la app; no cuenta como venta")
+
     subtotal = models.DecimalField(max_digits=14, decimal_places=2)
     descuento = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2)
@@ -49,7 +57,10 @@ class Venta(TenantModel):
     efectivo_recibido = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     cambio = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     nota = models.CharField(max_length=200, blank=True)
+    mesa = models.CharField(max_length=12, blank=True, help_text='Número de mesa, "LLEVAR" o vacío')
 
+    editada_en = models.DateTimeField(null=True, blank=True)
+    editada_por = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     entregado_en = models.DateTimeField(null=True, blank=True)
     entregado_por = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
 

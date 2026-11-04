@@ -23,7 +23,7 @@ class NegocioSerializer(serializers.ModelSerializer):
         fields = [
             "id", "nombre", "slug", "tipo", "plan", "nit", "telefono", "direccion", "logo_url",
             "color_primario", "color_acento",
-            "medios_pago", "usa_caja", "usa_cola_pedidos", "bloquear_sin_stock", "permitir_fiado", "mensaje_recibo",
+            "medios_pago", "usa_caja", "usa_cola_pedidos", "num_mesas", "bloquear_sin_stock", "permitir_fiado", "mensaje_recibo",
             "modulos_activos", "medios_pago_activos", "activo",
         ]
         read_only_fields = ["slug", "plan", "activo", "logo_url"]

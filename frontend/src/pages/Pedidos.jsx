@@ -1,31 +1,43 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, MessageSquareText, Undo2 } from "lucide-react";
+import { Check, MessageSquareText, Pencil, Undo2 } from "lucide-react";
 import { api } from "../lib/api";
-import { numero } from "../lib/formato";
+import { numero, pesos } from "../lib/formato";
+import { useSesion } from "../context/Sesion";
+import Cobro from "../components/Cobro";
+import EditorVenta from "../components/EditorVenta";
 import { Aviso } from "../components/ui";
+
+const PAGO = {
+  ABIERTA: ["Por cobrar", "bg-precio-claro text-texto"],
+  PAGADA: ["Pagado", "bg-ok-claro text-ok"],
+  FIADO: ["Fiado", "bg-fondo text-suave"],
+};
+const donde = (mesa) => (mesa === "LLEVAR" ? "Para llevar" : mesa ? `Mesa ${mesa}` : null);
 
 const ESPERA_LARGA = 10; // minutos: a partir de aquí el pedido se marca en rojo
 
 const minutosDesde = (iso, ahora) => Math.max(0, Math.floor((ahora - new Date(iso).getTime()) / 60000));
 const textoEspera = (min) => (min < 1 ? "Recién" : min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`);
 
-function Tarjeta({ p, ahora, onEntregar, enviando }) {
+function Tarjeta({ p, ahora, onEntregar, onCobrar, onEditar, enviando }) {
   const min = minutosDesde(p.creado, ahora);
-  const tarde = min >= ESPERA_LARGA;
+  const porCobrar = p.estado_pago === "ABIERTA";
+  const entregado = Boolean(p.entregado_en);
+  const tarde = !entregado && min >= ESPERA_LARGA;
+  const [etq, cls] = PAGO[p.estado_pago] || PAGO.PAGADA;
   return (
     <article className={`flex flex-col rounded-2xl border-2 bg-papel ${tarde ? "border-alerta" : "border-transparent"}`}>
       <header className="flex items-start justify-between gap-2 px-4 pt-4">
         <div>
           <p className="text-sm text-suave">Turno</p>
           <p className="font-display text-5xl font-extrabold leading-none text-tinta num">{p.turno}</p>
+          {donde(p.mesa) && <p className="mt-1.5 inline-block rounded-md bg-tinta px-2 py-0.5 text-sm font-semibold text-white">{donde(p.mesa)}</p>}
         </div>
         <div className="text-right">
-          <p className={`font-semibold num ${tarde ? "text-alerta" : "text-suave"}`}>{textoEspera(min)}</p>
+          <p className={`font-semibold num ${tarde ? "text-alerta" : "text-suave"}`}>{entregado ? "Entregado" : textoEspera(min)}</p>
           {p.cliente && <p className="mt-0.5 text-sm font-medium">{p.cliente}</p>}
-          {p.estado_pago === "FIADO" && (
-            <span className="mt-1 inline-block rounded-full bg-precio-claro px-2 py-0.5 text-xs font-semibold">Fiado</span>
-          )}
+          <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>{etq}</span>
         </div>
       </header>
       <ul className="flex-1 space-y-1.5 px-4 py-4">
@@ -37,24 +49,45 @@ function Tarjeta({ p, ahora, onEntregar, enviando }) {
         ))}
       </ul>
       {p.nota && (
-        <p className="mx-4 mb-4 flex gap-2 rounded-lg bg-precio-claro px-3 py-2 text-sm font-medium">
+        <p className="mx-4 mb-3 flex gap-2 rounded-lg bg-precio-claro px-3 py-2 text-sm font-medium">
           <MessageSquareText size={17} className="mt-0.5 shrink-0" aria-hidden />
           {p.nota}
         </p>
       )}
-      <button
-        onClick={() => onEntregar(p)}
-        disabled={enviando}
-        className="flex items-center justify-center gap-2 rounded-b-2xl bg-ok py-4 text-lg font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
-      >
-        <Check size={22} aria-hidden /> Entregado
-      </button>
+      <p className="flex items-baseline justify-between border-t border-dashed border-linea px-4 py-2.5">
+        <span className="text-sm text-suave">Total</span>
+        <span className="font-display text-xl font-extrabold text-tinta num">{pesos(p.total)}</span>
+      </p>
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-b-2xl bg-linea">
+        {porCobrar ? (
+          <>
+            <button onClick={() => onEditar(p)} className="flex items-center justify-center gap-1.5 bg-papel py-3.5 font-semibold text-tinta hover:bg-fondo">
+              <Pencil size={17} aria-hidden /> Editar
+            </button>
+            <button onClick={() => onCobrar(p)} className="bg-tinta py-3.5 font-semibold text-white hover:bg-tinta-2">
+              Cobrar
+            </button>
+          </>
+        ) : null}
+        {!entregado && (
+          <button
+            onClick={() => onEntregar(p)}
+            disabled={enviando}
+            className="col-span-2 flex items-center justify-center gap-2 bg-ok py-3.5 text-lg font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+          >
+            <Check size={22} aria-hidden /> Entregado
+          </button>
+        )}
+      </div>
     </article>
   );
 }
 
 export default function Pedidos() {
   const qc = useQueryClient();
+  const { negocio } = useSesion();
+  const [cobrando, setCobrando] = useState(null);
+  const [editando, setEditando] = useState(null);
   const [vista, setVista] = useState("pendientes");
   const [ahora, setAhora] = useState(Date.now());
   useEffect(() => {
@@ -81,7 +114,9 @@ export default function Pedidos() {
     onMutate: async (p) => {
       await qc.cancelQueries({ queryKey: ["pedidos", "pendientes"] });
       const antes = qc.getQueryData(["pedidos", "pendientes"]);
-      qc.setQueryData(["pedidos", "pendientes"], (lista = []) => lista.filter((x) => x.id !== p.id));
+      // Si falta cobrarlo se queda en la cola como "entregado, por cobrar"
+      qc.setQueryData(["pedidos", "pendientes"], (lista = []) =>
+        lista.flatMap((x) => (x.id !== p.id ? [x] : x.estado_pago === "ABIERTA" ? [{ ...x, entregado_en: new Date().toISOString() }] : [])));
       return { antes };
     },
     onError: (_e, _p, ctx) => qc.setQueryData(["pedidos", "pendientes"], ctx.antes),
@@ -101,7 +136,7 @@ export default function Pedidos() {
         <h1 className="font-display text-3xl font-bold text-tinta">Pedidos</h1>
         <div className="flex rounded-lg bg-papel p-1 text-sm font-semibold" role="tablist">
           {[
-            ["pendientes", `Por entregar${lista.length ? ` (${lista.length})` : ""}`],
+            ["pendientes", `Pendientes${lista.length ? ` (${lista.length})` : ""}`],
             ["entregados", "Entregados hoy"],
           ].map(([v, t]) => (
             <button
@@ -124,13 +159,14 @@ export default function Pedidos() {
           <p className="py-10 text-suave">Cargando pedidos…</p>
         ) : lista.length === 0 ? (
           <div className="mt-10 text-center">
-            <p className="font-display text-2xl font-bold text-tinta">Todo entregado</p>
-            <p className="mt-1 text-suave">Los pedidos nuevos aparecen aquí solos al vender.</p>
+            <p className="font-display text-2xl font-bold text-tinta">Todo entregado y cobrado</p>
+            <p className="mt-1 text-suave">Los pedidos que registres en Vender aparecen aquí para entregarlos y cobrarlos.</p>
           </div>
         ) : (
           <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {lista.map((p) => (
-              <Tarjeta key={p.id} p={p} ahora={ahora} onEntregar={entregar.mutate} enviando={entregar.isPending && entregar.variables?.id === p.id} />
+              <Tarjeta key={p.id} p={p} ahora={ahora} onEntregar={entregar.mutate} onCobrar={setCobrando} onEditar={setEditando}
+                enviando={entregar.isPending && entregar.variables?.id === p.id} />
             ))}
           </div>
         )
@@ -156,6 +192,18 @@ export default function Pedidos() {
           ))}
         </ul>
       )}
+      {cobrando && (
+        <Cobro
+          ventaId={cobrando.id}
+          total={Number(cobrando.total)}
+          detalle={cobrando.items}
+          titulo={`Cobrar turno ${cobrando.turno}${donde(cobrando.mesa) ? ` · ${donde(cobrando.mesa)}` : ""}`}
+          negocio={negocio}
+          onListo={() => { setCobrando(null); refrescar(); qc.invalidateQueries({ queryKey: ["caja"] }); }}
+          onCerrar={() => setCobrando(null)}
+        />
+      )}
+      {editando && <EditorVenta venta={editando} onCerrar={() => setEditando(null)} />}
     </div>
   );
 }

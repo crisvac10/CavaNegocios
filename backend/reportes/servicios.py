@@ -25,7 +25,8 @@ def _dias(desde, hasta):
 def ventas_validas(negocio, desde, hasta):
     from ventas.models import Venta
     ini, fin = rango_fechas(desde, hasta)
-    return Venta.objects.filter(negocio=negocio, creado__gte=ini, creado__lt=fin).exclude(estado=Venta.Estado.ANULADA)
+    return (Venta.objects.filter(negocio=negocio, creado__gte=ini, creado__lt=fin)
+            .exclude(estado=Venta.Estado.ANULADA).exclude(origen=Venta.Origen.SALDO_ANTERIOR))
 
 
 def serie_diaria(negocio, desde, hasta):
@@ -64,7 +65,9 @@ def resumen(negocio, desde, hasta):
     ini, fin = rango_fechas(desde, hasta)
     vs = ventas_validas(negocio, desde, hasta)
     agg = vs.aggregate(bruto=Sum("subtotal"), desc=Sum("descuento"), neto=Sum("total"),
-                       costo=Sum("costo_total"), n=Count("id"), fiado=Sum("saldo_pendiente"))
+                       costo=Sum("costo_total"), n=Count("id"))
+    agg["fiado"] = vs.filter(estado=Venta.Estado.FIADO).aggregate(t=Sum("saldo_pendiente"))["t"]
+    por_cobrar = vs.filter(estado=Venta.Estado.ABIERTA).aggregate(t=Sum("total"), n=Count("id"))
     neto, costo, n = agg["neto"] or CERO, agg["costo"] or CERO, agg["n"] or 0
 
     gastos = (Gasto.objects.filter(negocio=negocio, anulado=False, fecha__range=(desde, hasta))
@@ -102,6 +105,7 @@ def resumen(negocio, desde, hasta):
         "utilidad_neta": operativa - intereses,
         "dinero_recibido_por_medio": por_medio,
         "fiado_otorgado_pendiente": agg["fiado"] or CERO,
+        "pedidos_por_cobrar": {"total": por_cobrar["t"] or CERO, "cantidad": por_cobrar["n"] or 0},
         "abonos_fiado_cobrados": abonos,
         "cartera_total": cartera,
         "compras_mercancia": compras,

@@ -22,14 +22,21 @@ def sesion_abierta(negocio, requerida=True):
 
 
 def registrar(negocio, origen, monto, medio=MedioPago.EFECTIVO, concepto="", referencia="",
-              usuario=None, sesion=None):
+              usuario=None, sesion=None, momento=None):
     """Registra dinero en el libro. `monto` con signo (+ entra, - sale).
-    Con caja: va a la sesión abierta. Sin caja: queda por fecha para el cuadre diario."""
-    sesion = sesion or sesion_abierta(negocio)
-    return MovimientoCaja.objects.create(
+    Con caja: va a la sesión abierta. Sin caja: queda por fecha para el cuadre diario.
+    `momento` (datetime de un día anterior) deja el movimiento en ese día: no pasa por la caja
+    de hoy y aparece en el cuadre de esa fecha."""
+    if momento is None:
+        sesion = sesion or sesion_abierta(negocio)
+    mov = MovimientoCaja.objects.create(
         negocio=negocio, sesion=sesion, origen=origen, medio=medio, monto=Decimal(monto),
         concepto=concepto[:200], referencia=referencia, usuario=usuario,
     )
+    if momento is not None:
+        MovimientoCaja.objects.filter(pk=mov.pk).update(creado=momento)
+        mov.creado = momento
+    return mov
 
 
 def _totales(movs):

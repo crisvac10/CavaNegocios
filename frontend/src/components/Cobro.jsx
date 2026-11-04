@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, HandCoins, Search, UserPlus } from "lucide-react";
 import { api } from "../lib/api";
-import { MEDIOS, pesos } from "../lib/formato";
+import { MEDIOS, numero, pesos } from "../lib/formato";
 import { Aviso, Boton, Hoja, InputPesos } from "./ui";
 
 /** Billetes para "pagó con…": el siguiente redondo por encima del total y los billetes comunes. */
@@ -104,14 +104,14 @@ function SelectorCliente({ cliente, onElegir }) {
   );
 }
 
-export default function Cobro({ total, items, descuento, negocio, extra = {}, onListo, onCerrar }) {
+export default function Cobro({ total, items, descuento, negocio, extra = {}, onListo, onCerrar, ventaId, detalle, titulo, clienteInicial }) {
   const medios = negocio.medios_pago_activos;
   const [modo, setModo] = useState("pago"); // pago | fiar
   const [medio, setMedio] = useState(medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0]);
   const [recibido, setRecibido] = useState(0);
   const [dividir, setDividir] = useState(false);
   const [montos, setMontos] = useState({});
-  const [cliente, setCliente] = useState(null);
+  const [cliente, setCliente] = useState(clienteInicial || null);
   const [abono, setAbono] = useState(0);
 
   const pagos = useMemo(() => {
@@ -132,8 +132,16 @@ export default function Cobro({ total, items, descuento, negocio, extra = {}, on
   const recibidoCorto = efectivo > 0 && recibido > 0 && recibido < efectivo;
 
   const vender = useMutation({
-    mutationFn: () =>
-      api("/ventas/", {
+    mutationFn: () => ventaId
+      ? api(`/ventas/${ventaId}/cobrar/`, {
+          method: "POST",
+          body: {
+            pagos,
+            cliente: modo === "fiar" ? cliente.id : null,
+            efectivo_recibido: efectivo > 0 && recibido > 0 ? recibido : null,
+          },
+        })
+      : api("/ventas/", {
         method: "POST",
         body: {
           items,
@@ -148,7 +156,23 @@ export default function Cobro({ total, items, descuento, negocio, extra = {}, on
   });
 
   return (
-    <Hoja titulo={`Cobrar ${pesos(total)}`} onCerrar={onCerrar}>
+    <Hoja titulo={titulo || `Cobrar ${pesos(total)}`} onCerrar={onCerrar}>
+      {detalle?.length > 0 && (
+        <div className="mb-5 rounded-xl bg-fondo p-4">
+          <ul className="space-y-1.5">
+            {detalle.map((d, i) => (
+              <li key={i} className="flex justify-between gap-3 text-sm">
+                <span><strong className="num">{numero(d.cantidad)}×</strong> {d.nombre}</span>
+                <span className="num">{pesos(d.subtotal)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 flex items-baseline justify-between border-t border-dashed border-linea pt-2">
+            <span className="font-semibold">Total</span>
+            <span className="font-display text-2xl font-extrabold text-tinta num">{pesos(total)}</span>
+          </p>
+        </div>
+      )}
       {negocio.permitir_fiado && (
         <div className="mb-5 grid grid-cols-2 rounded-lg bg-fondo p-1 text-sm font-semibold" role="tablist">
           {[["pago", "Paga ahora"], ["fiar", "Fiar"]].map(([v, t]) => (

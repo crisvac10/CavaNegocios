@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle, Plus, Search, UserRound } from "lucide-react";
 import { api } from "../lib/api";
-import { MEDIOS, numero, pesos } from "../lib/formato";
+import { hoyISO, MEDIOS, numero, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
 import { Aviso, Boton, Hoja, InputPesos } from "../components/ui";
 
@@ -11,12 +11,19 @@ const campo = "w-full rounded-lg border border-linea bg-papel px-3 py-2.5 outlin
 function EditorCliente({ cliente, onCerrar }) {
   const qc = useQueryClient();
   const nuevo = !cliente?.id;
+  const { esAdmin } = useSesion();
   const [f, setF] = useState({ nombre: "", telefono: "", documento: "", notas: "", cupo_fiado: 0, ...cliente });
+  const [debe, setDebe] = useState({ monto: 0, fecha: hoyISO() });
   const guardar = useMutation({
-    mutationFn: () =>
-      nuevo
-        ? api("/clientes/", { method: "POST", body: f })
-        : api(`/clientes/${cliente.id}/`, { method: "PATCH", body: f }),
+    mutationFn: async () => {
+      const c = nuevo
+        ? await api("/clientes/", { method: "POST", body: f })
+        : await api(`/clientes/${cliente.id}/`, { method: "PATCH", body: f });
+      if (nuevo && debe.monto > 0) {
+        await api(`/clientes/${c.id}/deuda-anterior/`, { method: "POST", body: { monto: debe.monto, fecha: debe.fecha, nota: "Deuda anterior" } });
+      }
+      return c;
+    },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["clientes"] }); qc.invalidateQueries({ queryKey: ["fiados"] }); onCerrar(); },
   });
   return (
@@ -41,6 +48,16 @@ function EditorCliente({ cliente, onCerrar }) {
           <InputPesos valor={Number(f.cupo_fiado)} onCambio={(v) => setF({ ...f, cupo_fiado: v })} />
           <span className="mt-1 block text-sm text-suave">En 0, sin límite.</span>
         </label>
+        {nuevo && esAdmin && (
+          <fieldset className="rounded-xl bg-fondo p-3">
+            <legend className="sr-only">Deuda anterior</legend>
+            <p className="mb-2 text-sm font-semibold">¿Ya te debía de antes? <span className="font-normal text-suave">(lo del cuaderno)</span></p>
+            <div className="flex flex-wrap gap-2">
+              <InputPesos className="min-w-40 flex-1" valor={debe.monto} onCambio={(v) => setDebe({ ...debe, monto: v })} aria-label="Lo que ya debía" />
+              <input type="date" max={hoyISO()} value={debe.fecha} onChange={(e) => setDebe({ ...debe, fecha: e.target.value })} className="rounded-lg border border-linea bg-papel px-3" aria-label="Desde cuándo" />
+            </div>
+          </fieldset>
+        )}
         <label className="block">
           <span className="mb-1.5 block text-sm font-semibold">Notas</span>
           <input value={f.notas} onChange={(e) => setF({ ...f, notas: e.target.value })} className={campo} placeholder="Ej. paga los viernes" />
@@ -67,6 +84,16 @@ function Cuenta({ clienteId, onCerrar, onEditar }) {
   const { data: rec } = useQuery({
     queryKey: ["fiados", "recordatorio", clienteId],
     queryFn: () => api(`/clientes/${clienteId}/recordatorio/`),
+  });
+  const [anterior, setAnterior] = useState(null); // {monto, fecha, nota} mientras se registra
+  const deuda = useMutation({
+    mutationFn: () => api(`/clientes/${clienteId}/deuda-anterior/`, { method: "POST", body: anterior }),
+    onSuccess: () => {
+      setOk(`Deuda anterior de ${pesos(anterior.monto)} registrada.`);
+      setAnterior(null);
+      qc.invalidateQueries({ queryKey: ["fiados"] });
+      qc.invalidateQueries({ queryKey: ["clientes"] });
+    },
   });
   const abonar = useMutation({
     mutationFn: () => api(`/clientes/${clienteId}/abonar/`, { method: "POST", body: { monto, medio } }),
@@ -137,12 +164,12 @@ function Cuenta({ clienteId, onCerrar, onEditar }) {
                 <li key={v.id} className="px-4 py-3">
                   <div className="flex justify-between gap-3">
                     <span className="font-medium">
-                      #{v.numero} · {new Date(v.creado).toLocaleDateString("es-CO", { day: "numeric", month: "short" })}
+                      {v.origen === "SALDO_ANTERIOR" ? "Deuda anterior" : `#${v.numero}`} · {new Date(v.creado).toLocaleDateString("es-CO", { day: "numeric", month: "short", year: "numeric" })}
                     </span>
                     <span className="font-semibold text-alerta num">{pesos(v.saldo_pendiente)}</span>
                   </div>
-                  <p className="truncate text-sm text-suave">
-                    {v.detalles.map((d) => `${numero(d.cantidad)} ${d.nombre}`).join(", ")} · total {pesos(v.total)}
+                  <p className="text-sm text-suave">
+                    {v.origen === "SALDO_ANTERIOR" ? v.nota : `${v.detalles.map((d) => `${numero(d.cantidad)} ${d.nombre}`).join(", ")} · total ${pesos(v.total)}`}
                   </p>
                 </li>
               ))}
@@ -164,7 +191,29 @@ function Cuenta({ clienteId, onCerrar, onEditar }) {
           )}
 
           {esAdmin && (
-            <button onClick={() => onEditar(c)} className="mt-5 text-sm font-semibold text-tinta underline">Editar datos del cliente</button>
+            <div className="mt-5 space-y-3">
+              {!anterior ? (
+                <button onClick={() => { setOk(""); setAnterior({ monto: 0, fecha: hoyISO(), nota: "" }); }} className="block text-sm font-semibold text-tinta underline">
+                  Registrar algo que ya debía de antes
+                </button>
+              ) : (
+                <form className="rounded-xl bg-fondo p-4" onSubmit={(e) => { e.preventDefault(); deuda.mutate(); }}>
+                  <p className="mb-1 font-semibold">Deuda de antes de usar la app</p>
+                  <p className="mb-3 text-sm text-suave">Suma a lo que te debe, pero no cuenta como venta en tus reportes (ya se vendió antes).</p>
+                  <div className="flex flex-wrap gap-2">
+                    <InputPesos className="min-w-40 flex-1" valor={anterior.monto} onCambio={(v) => setAnterior({ ...anterior, monto: v })} aria-label="Monto que debía" />
+                    <input type="date" max={hoyISO()} value={anterior.fecha} onChange={(e) => setAnterior({ ...anterior, fecha: e.target.value })} className="rounded-lg border border-linea bg-papel px-3" aria-label="Fecha" />
+                  </div>
+                  <input value={anterior.nota} onChange={(e) => setAnterior({ ...anterior, nota: e.target.value })} placeholder="Detalle (ej. cuaderno de octubre)" className="mt-2 w-full rounded-lg border border-linea bg-papel px-3 py-2.5 outline-none focus:border-tinta" />
+                  {deuda.error && <div className="mt-2"><Aviso>{deuda.error.message}</Aviso></div>}
+                  <div className="mt-3 flex gap-2">
+                    <Boton type="button" variante="borde" className="flex-1 py-2.5" onClick={() => setAnterior(null)}>Cancelar</Boton>
+                    <Boton className="flex-1 py-2.5" disabled={!anterior.monto || deuda.isPending}>Registrar deuda</Boton>
+                  </div>
+                </form>
+              )}
+              <button onClick={() => onEditar(c)} className="block text-sm font-semibold text-tinta underline">Editar datos del cliente</button>
+            </div>
           )}
         </>
       )}

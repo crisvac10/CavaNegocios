@@ -135,6 +135,7 @@ export default function Ajustes() {
     medios_pago: negocio.medios_pago_activos,
     usa_caja: negocio.usa_caja,
     usa_cola_pedidos: negocio.usa_cola_pedidos,
+    num_mesas: negocio.num_mesas || 0,
     permitir_fiado: negocio.permitir_fiado,
     bloquear_sin_stock: negocio.bloquear_sin_stock,
   }));
@@ -252,6 +253,14 @@ export default function Ajustes() {
 
         <Seccion titulo="Cómo trabaja el negocio">
           <div className="space-y-2">
+            <label className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-linea bg-papel p-4">
+              <span>
+                <span className="block font-semibold">Mesas del local</span>
+                <span className="block text-sm text-suave">Al registrar un pedido eliges la mesa o "Para llevar". En 0, solo aparece "Para llevar".</span>
+              </span>
+              <input type="number" min={0} max={99} value={f.num_mesas} onChange={(e) => setF((x) => ({ ...x, num_mesas: Math.max(0, Math.min(99, Number(e.target.value) || 0)) }))}
+                className="w-20 rounded-lg border border-linea px-3 py-2 text-center outline-none focus:border-tinta" aria-label="Número de mesas" />
+            </label>
             {[
               ["usa_cola_pedidos", "Cola de pedidos", "Cada venta entra a Pedidos con su turno hasta marcarla entregada."],
               ["permitir_fiado", "Fiar a clientes", "Permite vender a crédito a clientes registrados."],
