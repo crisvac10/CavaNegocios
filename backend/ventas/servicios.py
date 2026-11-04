@@ -200,7 +200,7 @@ def editar_venta(negocio, usuario, venta, items, descuento=None, nota=None, pago
     Corrige una venta: productos, descuento, nota y (si ya estaba cobrada) cómo se pagó y su fecha.
     El inventario se ajusta con la diferencia y el dinero queda en el día de la venta.
     """
-    venta = Venta.objects.select_for_update().select_related("sesion_caja").get(pk=venta.pk, negocio=negocio)
+    venta = Venta.objects.select_for_update(of=("self",)).select_related("sesion_caja").get(pk=venta.pk, negocio=negocio)
     if venta.estado == Venta.Estado.ANULADA:
         raise ValidationError("La venta está eliminada.")
     if venta.origen == Venta.Origen.SALDO_ANTERIOR:
@@ -267,7 +267,7 @@ def eliminar_venta(negocio, usuario, venta, motivo=""):
     se vendió (como si nunca hubiera pasado). Queda en el historial marcada como eliminada.
     Para una devolución real de hoy con caja registradora, usa anular_venta.
     """
-    venta = Venta.objects.select_for_update().select_related("sesion_caja").get(pk=venta.pk, negocio=negocio)
+    venta = Venta.objects.select_for_update(of=("self",)).select_related("sesion_caja").get(pk=venta.pk, negocio=negocio)
     if venta.estado == Venta.Estado.ANULADA:
         raise ValidationError("La venta ya está eliminada.")
     if venta.pagos.filter(es_abono=True).exists():
