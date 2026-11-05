@@ -8,7 +8,12 @@ import { useSesion } from "./Sesion";
  * modo privado: entonces solo dura mientras la app esté abierta).
  */
 const Ctx = createContext(null);
-const VACIO = { carrito: {}, descuento: 0, nota: "", entregarYa: false, mesa: "" };
+// extras: cosas personalizadas que no están en el catálogo [{id, nombre, precio, cantidad}]
+// modo "encargo": se guarda para una fecha con cliente y abono (tienda de regalos)
+const VACIO = {
+  carrito: {}, extras: [], descuento: 0, nota: "", entregarYa: false, mesa: "",
+  modo: "venta", encargo: { cliente: null, fecha: "", abono: 0, medio: "EFECTIVO" },
+};
 
 const clave = (negocioId) => `cn_pedido_${negocioId}`;
 function leer(negocioId) {
@@ -38,6 +43,9 @@ export function CarritoProvider({ children }) {
     setNota: (v) => setEstado((e) => ({ ...e, nota: v })),
     setEntregarYa: (v) => setEstado((e) => ({ ...e, entregarYa: v })),
     setMesa: (v) => setEstado((e) => ({ ...e, mesa: v })),
+    setExtras: (f) => setEstado((e) => ({ ...e, extras: typeof f === "function" ? f(e.extras) : f })),
+    setModo: (v) => setEstado((e) => ({ ...e, modo: v })),
+    setEncargo: (cambios) => setEstado((e) => ({ ...e, encargo: { ...e.encargo, ...cambios } })),
     vaciar: () => setEstado(VACIO),
   }), [estado]);
 

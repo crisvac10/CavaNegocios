@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { CalendarDays, CheckCircle2, Minus, Plus, Search, Share2, ShoppingBasket, Trash2 } from "lucide-react";
+import { CalendarDays, CheckCircle2, Gift, Minus, PenLine, Plus, Search, Share2, ShoppingBasket, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
-import { fechaCorta, hoyISO, numero, pesos } from "../lib/formato";
+import { MEDIOS, fechaCorta, hoyISO, numero, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
 import { useCarrito } from "../context/Carrito";
-import Cobro from "../components/Cobro";
+import Cobro, { SelectorCliente } from "../components/Cobro";
 import { Aviso, Boton, Hoja, InputPesos } from "../components/ui";
 
 /* ---------- Venta de un día anterior ---------- */
@@ -57,12 +57,14 @@ function Etiqueta({ p, cantidad, onAgregar, conFotos }) {
 function Cuenta({
   lineas, subtotal, descuento, total, onCantidad, onQuitar, onDescuento, onVaciar, onAccion, textoAccion, puedeVender,
   nota, onNota, usaCola, entregarYa, onEntregarYa, numMesas, mesa, onMesa, enviando,
+  arriba, campos, titulo = "Cuenta", aviso,
 }) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 rounded-t-xl bg-papel px-4 pt-4 shadow-[0_1px_0_var(--color-linea)]">
+        {arriba}
         <div className="flex items-baseline justify-between border-b border-dashed border-linea pb-3">
-          <h2 className="font-display text-lg font-bold text-tinta">Cuenta</h2>
+          <h2 className="font-display text-lg font-bold text-tinta">{titulo}</h2>
           {lineas.length > 0 && (
             <button onClick={onVaciar} className="text-sm text-suave hover:text-alerta">Vaciar</button>
           )}
@@ -76,6 +78,7 @@ function Cuenta({
           <ul className="divide-y divide-dashed divide-linea">
             {lineas.map(({ p, cantidad }) => (
               <li key={p.id} className="py-3">
+                {p.personalizado && <p className="mb-0.5 text-xs font-semibold uppercase tracking-wide text-suave">Personalizado</p>}
                 <div className="flex items-start justify-between gap-3">
                   <span className="font-medium leading-snug">{p.nombre}</span>
                   <span className="font-semibold num">{pesos(p.precio * cantidad)}</span>
@@ -114,6 +117,7 @@ function Cuenta({
       <div className="bg-papel px-4 pb-4">
         {lineas.length > 0 && (
           <div className="space-y-2 border-t border-dashed border-linea pt-3 text-sm">
+            {campos}
             {usaCola && (
               <div className="flex flex-wrap gap-1.5" role="group" aria-label="Dónde se entrega">
                 {[["LLEVAR", "Para llevar"], ...Array.from({ length: numMesas }, (_, i) => [String(i + 1), `Mesa ${i + 1}`])].map(([v, t]) => (
@@ -154,6 +158,7 @@ function Cuenta({
           <span className="font-display text-lg font-bold text-tinta">Total</span>
           <span className="font-display text-3xl font-extrabold text-tinta num">{pesos(total)}</span>
         </div>
+        {aviso && lineas.length > 0 && <p className="mt-3 text-sm text-suave">{aviso}</p>}
         <Boton
           variante="ok"
           className="mt-4 w-full py-4 text-lg"
@@ -186,8 +191,116 @@ function AbrirCaja({ onCerrar }) {
   );
 }
 
+/* ---------- Algo personalizado (no está en el catálogo) ---------- */
+function Personalizado({ onAgregar, onCerrar }) {
+  const [nombre, setNombre] = useState("");
+  const [precio, setPrecio] = useState(0);
+  const [cantidad, setCantidad] = useState(1);
+  return (
+    <Hoja titulo="Agregar algo personalizado" onCerrar={onCerrar}>
+      <form
+        className="space-y-3"
+        onSubmit={(e) => { e.preventDefault(); onAgregar({ nombre: nombre.trim(), precio, cantidad }); }}
+      >
+        <label className="block text-sm font-semibold">
+          ¿Qué es?
+          <input
+            autoFocus
+            required
+            maxLength={120}
+            value={nombre}
+            onChange={(e) => setNombre(e.target.value)}
+            placeholder="Ej. Ancheta con foto y globos"
+            className="mt-1 w-full rounded-lg border border-linea px-3 py-2.5 font-normal outline-none focus:border-tinta"
+          />
+        </label>
+        <div className="grid grid-cols-[1fr_110px] gap-3">
+          <label className="block text-sm font-semibold">
+            Precio
+            <InputPesos className="mt-1" valor={precio} onCambio={setPrecio} aria-label="Precio" />
+          </label>
+          <label className="block text-sm font-semibold">
+            Cantidad
+            <input
+              type="number"
+              min={1}
+              value={cantidad}
+              onChange={(e) => setCantidad(Math.max(1, Number(e.target.value) || 1))}
+              className="mt-1 w-full rounded-lg border border-linea px-3 py-2.5 font-normal num outline-none focus:border-tinta"
+            />
+          </label>
+        </div>
+        <Boton className="w-full" disabled={!nombre.trim() || precio <= 0}>Agregar a la cuenta</Boton>
+      </form>
+    </Hoja>
+  );
+}
+
+/* ---------- Datos del encargo: cliente, fecha de entrega y abono ---------- */
+function CamposEncargo({ encargo, setEncargo, total, medios }) {
+  return (
+    <div className="space-y-3 pb-1">
+      <div>
+        <p className="mb-1.5 font-semibold text-texto">Cliente</p>
+        <SelectorCliente cliente={encargo.cliente} onElegir={(c) => setEncargo({ cliente: c })} />
+      </div>
+      <label className="flex items-center justify-between gap-3 font-semibold text-texto">
+        Fecha de entrega
+        <input
+          type="date"
+          min={hoyISO()}
+          value={encargo.fecha}
+          onChange={(e) => setEncargo({ fecha: e.target.value })}
+          className="rounded-lg border border-linea bg-papel px-3 py-2 font-normal"
+        />
+      </label>
+      <div>
+        <p className="mb-1.5 font-semibold text-texto">Abono <span className="font-normal text-suave">(opcional)</span></p>
+        <div className="flex gap-2">
+          <InputPesos className="flex-1" valor={encargo.abono} onCambio={(v) => setEncargo({ abono: v })} aria-label="Abono del encargo" />
+          <select
+            value={encargo.medio}
+            onChange={(e) => setEncargo({ medio: e.target.value })}
+            className="rounded-lg border border-linea bg-papel px-3"
+            aria-label="Medio del abono"
+          >
+            {medios.map((m) => <option key={m} value={m}>{MEDIOS[m]}</option>)}
+          </select>
+        </div>
+        {total > 0 && <p className="mt-1.5 text-suave num">Falta {pesos(Math.max(total - encargo.abono, 0))} para la entrega</p>}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Venta registrada ---------- */
 function VentaLista({ venta, onNueva, onCobrar }) {
+  if (venta.estado === "ENCARGO") {
+    const abonado = Number(venta.total) - Number(venta.saldo_pendiente);
+    return (
+      <Hoja titulo="Encargo guardado" onCerrar={onNueva}>
+        <div className="text-center">
+          <Gift size={44} className="mx-auto text-ok" aria-hidden />
+          <p className="mt-2 text-lg font-semibold">{venta.cliente_nombre}</p>
+          <p className="text-suave">Entrega el <strong className="capitalize text-texto">{fechaCorta(venta.fecha_entrega, { dia: true })}</strong></p>
+          <p className="mt-2 font-display text-3xl font-extrabold text-tinta num">{pesos(venta.total)}</p>
+          <p className="mx-auto mt-3 max-w-xs rounded-xl bg-precio-claro px-4 py-3 text-tinta">
+            {abonado > 0 ? <>Abonó <strong className="num">{pesos(abonado)}</strong> · </> : null}
+            Falta <strong className="num">{pesos(venta.saldo_pendiente)}</strong>
+          </p>
+        </div>
+        <div className="mt-6 grid gap-2 sm:grid-cols-3">
+          {venta.whatsapp_recibo && (
+            <a href={venta.whatsapp_recibo} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-lg border border-linea py-3 font-semibold text-tinta hover:bg-fondo">
+              <Share2 size={18} aria-hidden /> Comprobante
+            </a>
+          )}
+          <Link to="/encargos" className="inline-flex items-center justify-center rounded-lg border border-linea py-3 font-semibold text-tinta hover:bg-fondo">Ver encargos</Link>
+          <Boton onClick={onNueva} data-autofocus>Nuevo</Boton>
+        </div>
+      </Hoja>
+    );
+  }
   if (venta.estado === "ABIERTA") {
     return (
       <Hoja titulo="Pedido registrado" onCerrar={onNueva}>
@@ -247,7 +360,11 @@ export default function Vender() {
   const [categoria, setCategoria] = useState("todas");
   const [busqueda, setBusqueda] = useState("");
   // El pedido en curso vive en el contexto: no se pierde al cambiar de pestaña ni al recargar
-  const { carrito, setCarrito, descuento, setDescuento, nota, setNota, entregarYa, setEntregarYa, mesa, setMesa, vaciar } = useCarrito();
+  const {
+    carrito, setCarrito, extras = [], setExtras, descuento, setDescuento, nota, setNota, entregarYa, setEntregarYa,
+    mesa, setMesa, modo, setModo, encargo, setEncargo, vaciar,
+  } = useCarrito();
+  const [personalizando, setPersonalizando] = useState(false);
   const [cobrando, setCobrando] = useState(false);
   const [cobrandoPedido, setCobrandoPedido] = useState(null);
   // Venta de un día anterior (solo el dueño): /vender?fecha=2026-10-30
@@ -279,25 +396,34 @@ export default function Vender() {
   }, [productos, categoria, busqueda]);
 
   const conFotos = visibles.some((p) => p.foto_url);
-  const lineas = Object.entries(carrito)
-    .map(([id, cantidad]) => ({ p: productos.find((x) => x.id === Number(id)), cantidad }))
-    .filter((l) => l.p);
+  const lineas = [
+    ...Object.entries(carrito)
+      .map(([id, cantidad]) => ({ p: productos.find((x) => x.id === Number(id)), cantidad }))
+      .filter((l) => l.p),
+    ...extras.map((x) => ({ p: { id: `x${x.id}`, nombre: x.nombre, precio: x.precio, personalizado: true }, cantidad: x.cantidad })),
+  ];
   const subtotal = lineas.reduce((s, l) => s + l.p.precio * l.cantidad, 0);
   const total = Math.max(subtotal - descuento, 0);
   const unidades = lineas.reduce((s, l) => s + l.cantidad, 0);
 
   const agregar = (p) => setCarrito((c) => ({ ...c, [p.id]: (c[p.id] || 0) + 1 }));
   const fijarCantidad = (id, n) =>
-    setCarrito((c) => {
+    String(id).startsWith("x")
+      ? setExtras((xs) => xs.flatMap((x) => (`x${x.id}` !== id ? [x] : n <= 0 ? [] : [{ ...x, cantidad: n }])))
+      : setCarrito((c) => {
       const copia = { ...c };
       if (n <= 0) delete copia[id];
       else copia[id] = n;
       return copia;
     });
+  // Cada tipo de negocio vende a su manera:
+  // - Cafetería / restaurante (tiene Pedidos): se registra el pedido y se cobra después.
+  // - Tienda / tienda de regalos: se cobra de una vez. La de regalos además toma encargos.
+  // Una venta de un día anterior siempre se cobra de una, porque ese día ya pasó.
   const usaCola = tieneModulo("pedidos") && negocio?.usa_cola_pedidos;
-  // Siempre se registra el pedido y se cobra después (en Pedidos, en Hoy o con "Cobrar ahora").
-  // Solo la venta de un día anterior se cobra de una, porque ese día ya pasó.
-  const registrarPrimero = !fecha;
+  const registrarPrimero = !fecha && tieneModulo("pedidos");
+  const conEncargos = tieneModulo("encargos") && !fecha;
+  const enEncargo = conEncargos && modo === "encargo";
   const [otroDia, setOtroDia] = useState(false);
   const [diaElegido, setDiaElegido] = useState("");
 
@@ -310,7 +436,8 @@ export default function Vender() {
     vaciar();
     refrescar();
   };
-  const itemsPedido = () => lineas.map(({ p, cantidad }) => ({ producto: p.id, cantidad }));
+  const itemsPedido = () => lineas.map(({ p, cantidad }) =>
+    p.personalizado ? { nombre: p.nombre, precio: p.precio, cantidad } : { producto: p.id, cantidad });
   const registrar = useMutation({
     mutationFn: () => api("/ventas/", {
       method: "POST",
@@ -318,6 +445,36 @@ export default function Vender() {
     }),
     onSuccess: alVender,
   });
+  const guardarEncargo = useMutation({
+    mutationFn: () => api("/encargos/", {
+      method: "POST",
+      body: {
+        items: itemsPedido(), cliente: encargo.cliente?.id, fecha_entrega: encargo.fecha, descuento, nota,
+        pagos: encargo.abono > 0 ? [{ medio: encargo.medio, monto: encargo.abono }] : [],
+      },
+    }),
+    onSuccess: alVender,
+  });
+  const faltaEncargo = !encargo?.cliente ? "Elige el cliente del encargo."
+    : !encargo.fecha || encargo.fecha < hoyISO() ? "Pon la fecha de entrega."
+    : encargo.abono > total ? "El abono no puede ser mayor al total."
+    : cajaCerrada && encargo.abono > 0 ? "Abre la caja para recibir el abono." : null;
+
+  const selectorModo = conEncargos ? (
+    <div className="mb-3 grid grid-cols-2 rounded-lg bg-fondo p-1 text-sm font-semibold" role="tablist" aria-label="Tipo de venta">
+      {[["venta", "Venta ahora"], ["encargo", "Encargo"]].map(([v, t]) => (
+        <button
+          key={v}
+          role="tab"
+          aria-selected={modo === v}
+          onClick={() => setModo(v)}
+          className={`flex items-center justify-center gap-1.5 rounded-md py-2 ${modo === v ? "bg-papel text-tinta shadow-sm" : "text-suave"}`}
+        >
+          {v === "encargo" && <Gift size={15} aria-hidden />} {t}
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   const propsCuenta = {
     lineas, subtotal, descuento, total,
@@ -325,11 +482,15 @@ export default function Vender() {
     onQuitar: (id) => fijarCantidad(id, 0),
     onDescuento: (v) => setDescuento(Math.min(v, subtotal)),
     onVaciar: vaciar,
-    onAccion: () => (registrarPrimero ? registrar.mutate() : setCobrando(true)),
-    textoAccion: registrarPrimero ? "Registrar pedido" : fecha ? `Cobrar venta del ${fechaCorta(fecha)}` : "Cobrar",
-    enviando: registrar.isPending,
-    puedeVender: registrarPrimero || Boolean(fecha) || !cajaCerrada,
-    nota, onNota: setNota, usaCola: usaCola && registrarPrimero, entregarYa, onEntregarYa: setEntregarYa,
+    onAccion: () => (enEncargo ? guardarEncargo.mutate() : registrarPrimero ? registrar.mutate() : setCobrando(true)),
+    textoAccion: enEncargo ? "Guardar encargo" : registrarPrimero ? "Registrar pedido" : fecha ? `Cobrar venta del ${fechaCorta(fecha)}` : "Cobrar",
+    enviando: registrar.isPending || guardarEncargo.isPending,
+    puedeVender: enEncargo ? !faltaEncargo : registrarPrimero || Boolean(fecha) || !cajaCerrada,
+    aviso: enEncargo ? faltaEncargo : null,
+    arriba: selectorModo,
+    titulo: enEncargo ? "Encargo" : "Cuenta",
+    campos: enEncargo ? <CamposEncargo encargo={encargo} setEncargo={setEncargo} total={total} medios={negocio?.medios_pago_activos || []} /> : null,
+    nota, onNota: setNota, usaCola: usaCola && registrarPrimero && !enEncargo, entregarYa, onEntregarYa: setEntregarYa,
     numMesas: negocio?.num_mesas || 0, mesa, onMesa: setMesa,
   };
 
@@ -373,8 +534,8 @@ export default function Vender() {
             )}
           </div>
         )}
-        {registrar.error && <div className="mb-4"><Aviso>{registrar.error.message}</Aviso></div>}
-        {cajaCerrada && !registrarPrimero && (
+        {(registrar.error || guardarEncargo.error) && <div className="mb-4"><Aviso>{(registrar.error || guardarEncargo.error).message}</Aviso></div>}
+        {cajaCerrada && !registrarPrimero && !enEncargo && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-precio-claro px-4 py-3">
             <p className="font-medium">La caja está cerrada. Ábrela para empezar a vender.</p>
             <Boton onClick={() => setAbrirCaja(true)} className="py-2">Abrir caja</Boton>
@@ -391,6 +552,14 @@ export default function Vender() {
               className="w-full bg-transparent py-3 outline-none"
               aria-label="Buscar producto"
             />
+            {conEncargos && (
+              <button
+                onClick={() => setPersonalizando(true)}
+                className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-2 text-sm font-semibold text-tinta hover:bg-fondo"
+              >
+                <PenLine size={16} aria-hidden /> <span className="hidden sm:inline">Personalizado</span>
+              </button>
+            )}
           </div>
           {categorias.length > 0 && (
             <div className="mt-3 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Categorías">
@@ -453,7 +622,7 @@ export default function Vender() {
         </div>
       )}
       {cuentaMovil && (
-        <Hoja titulo={registrarPrimero ? "Revisar pedido" : "Revisar venta"} onCerrar={() => setCuentaMovil(false)}>
+        <Hoja titulo={enEncargo ? "Revisar encargo" : registrarPrimero ? "Revisar pedido" : "Revisar venta"} onCerrar={() => setCuentaMovil(false)}>
           <div className="-mx-5 -mb-5 bg-fondo px-3 pb-3 pt-1">
             <Cuenta {...propsCuenta} />
           </div>
@@ -465,7 +634,7 @@ export default function Vender() {
           total={total}
           descuento={descuento}
           negocio={negocio}
-          items={lineas.map(({ p, cantidad }) => ({ producto: p.id, cantidad }))}
+          items={itemsPedido()}
           extra={{ nota, entregar_ya: entregarYa, mesa, ...(fecha ? { fecha } : {}) }}
           onListo={alVender}
           onCerrar={() => setCobrando(false)}
@@ -483,6 +652,12 @@ export default function Vender() {
         />
       )}
       {abrirCaja && <AbrirCaja onCerrar={() => setAbrirCaja(false)} />}
+      {personalizando && (
+        <Personalizado
+          onCerrar={() => setPersonalizando(false)}
+          onAgregar={(x) => { setExtras((xs) => [...xs, { ...x, id: Date.now() }]); setPersonalizando(false); }}
+        />
+      )}
       {ventaLista && (
         <VentaLista
           venta={ventaLista}

@@ -8,6 +8,7 @@ import Hoy from "./pages/Hoy";
 import Recibo from "./pages/Recibo";
 import MenuPublico from "./pages/MenuPublico";
 import Pedidos from "./pages/Pedidos";
+import Encargos from "./pages/Encargos";
 import Productos from "./pages/Productos";
 import Ajustes from "./pages/Ajustes";
 import Fiados from "./pages/Fiados";
@@ -50,6 +51,7 @@ export default function App() {
         <Route path="/vender" element={<Vender />} />
         <Route path="/hoy" element={<Hoy />} />
         <Route path="/pedidos" element={<Pedidos />} />
+        <Route path="/encargos" element={<Encargos />} />
         <Route path="/productos" element={<Productos />} />
         <Route path="/fiados" element={<Fiados />} />
         <Route path="/gastos" element={<Gastos />} />

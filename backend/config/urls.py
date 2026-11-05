@@ -14,7 +14,7 @@ from reportes.views import ReportesViewSet
 from saas.views import NegociosSaasViewSet
 from usuarios import views as u
 from catalogo.views import menu_publico
-from ventas.views import ClienteViewSet, PedidoViewSet, VentaViewSet, recibo_publico
+from ventas.views import ClienteViewSet, EncargoViewSet, PedidoViewSet, VentaViewSet, recibo_publico
 
 router = DefaultRouter()
 router.register("categorias", CategoriaViewSet, basename="categoria")
@@ -23,6 +23,7 @@ router.register("inventario", MovimientoViewSet, basename="inventario")
 router.register("clientes", ClienteViewSet, basename="cliente")
 router.register("ventas", VentaViewSet, basename="venta")
 router.register("pedidos", PedidoViewSet, basename="pedido")
+router.register("encargos", EncargoViewSet, basename="encargo")
 router.register("proveedores", ProveedorViewSet, basename="proveedor")
 router.register("categorias-gasto", CategoriaGastoViewSet, basename="categoria-gasto")
 router.register("gastos", GastoViewSet, basename="gasto")

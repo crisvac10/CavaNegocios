@@ -14,9 +14,23 @@ class Modulo(models.TextChoices):
     CREDITOS = "creditos", "Créditos y plan de pago"
     PEDIDOS = "pedidos", "Cola de pedidos"
     MENU = "menu", "Menú digital (QR)"
+    ENCARGOS = "encargos", "Encargos con abonos"
 
 
 MODULOS_BASE = [m.value for m in Modulo]
+
+# Cada tipo de negocio vende a su manera (módulos que trae si el superadmin no los elige a mano):
+# - Cafetería / restaurante: se registra el pedido, pasa por la cola (mesas, para llevar) y se cobra.
+# - Tienda: se cobra de una vez, sin cola.
+# - Tienda de regalos: cobra de una vez y además toma encargos para una fecha, con abonos.
+_SIN = {
+    "CAFETERIA": {Modulo.ENCARGOS},
+    "RESTAURANTE": {Modulo.ENCARGOS},
+    "TIENDA": {Modulo.ENCARGOS, Modulo.PEDIDOS},
+    "REGALOS": {Modulo.PEDIDOS},
+    "OTRO": {Modulo.ENCARGOS},
+}
+MODULOS_POR_TIPO = {t: [m for m in MODULOS_BASE if m not in sin] for t, sin in _SIN.items()}
 
 
 class MedioPago(models.TextChoices):
@@ -32,6 +46,7 @@ class Negocio(models.Model):
         CAFETERIA = "CAFETERIA", "Cafetería"
         RESTAURANTE = "RESTAURANTE", "Restaurante"
         TIENDA = "TIENDA", "Tienda"
+        REGALOS = "REGALOS", "Tienda de regalos"
         OTRO = "OTRO", "Otro"
 
     class Plan(models.TextChoices):
@@ -50,7 +65,7 @@ class Negocio(models.Model):
     color_acento = models.CharField(max_length=7, default="#F4B400", help_text="Etiquetas de precio (texto del color primario encima)")
 
     # Configuración operativa
-    modulos = models.JSONField(default=list, blank=True, help_text="Módulos activos. Vacío = todos.")
+    modulos = models.JSONField(default=list, blank=True, help_text="Módulos activos. Vacío = los que trae su tipo de negocio.")
     medios_pago = models.JSONField(default=list, blank=True, help_text="Medios de pago habilitados. Vacío = todos.")
     usa_caja = models.BooleanField(
         default=False,
@@ -83,11 +98,16 @@ class Negocio(models.Model):
 
     @property
     def modulos_activos(self):
-        return self.modulos or MODULOS_BASE
+        return self.modulos or MODULOS_POR_TIPO.get(self.tipo, MODULOS_BASE)
 
     @property
     def medios_pago_activos(self):
         return self.medios_pago or [m.value for m in MedioPago]
+
+    @property
+    def usa_cola(self):
+        """Los pedidos pasan por la cola de cocina hasta entregarse (cafeterías y restaurantes)."""
+        return self.usa_cola_pedidos and self.tiene_modulo(Modulo.PEDIDOS)
 
     def tiene_modulo(self, modulo):
         return modulo in self.modulos_activos

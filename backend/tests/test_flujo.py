@@ -425,8 +425,11 @@ class FotosMenuPedidos(Base):
         self.assertEqual(len(self.ok(self.c.get("/api/pedidos/?estado=entregados"))), 2)
         self.ok(self.c.post(f"/api/pedidos/{v1['id']}/deshacer/"))
         self.assertEqual(len(self.ok(self.c.get("/api/pedidos/"))), 1)
-        # Otro negocio no ve ni toca la cola
+        # Otro negocio no ve ni toca la cola (y una tienda ni siquiera tiene cola: cobra directo)
         self.login("luis")
+        self.assertEqual(self.c.get("/api/pedidos/").status_code, 403)
+        self.otro.modulos = ["pos", "pedidos"]
+        self.otro.save()
         self.assertEqual(self.ok(self.c.get("/api/pedidos/")), [])
         self.assertEqual(self.c.post(f"/api/pedidos/{v1['id']}/entregar/").status_code, 404)
 
@@ -789,3 +792,98 @@ class Mesas(Base):
         self.assertEqual(self.c.post("/api/ventas/", {"items": items, "registrar": True, "mesa": "6"}, format="json").status_code, 400)
         e = self.ok(self.c.post(f"/api/ventas/{m3['id']}/editar/", {"items": items, "mesa": "LLEVAR"}, format="json"))
         self.assertEqual(e["mesa"], "LLEVAR")
+
+
+class EncargosTiendaRegalos(Base):
+    """Tienda de regalos: vende de una vez y toma encargos con abonos que cuentan como venta al entregarse."""
+
+    def setUp(self):
+        super().setUp()
+        self.reg = Negocio.objects.create(nombre="Detalles Sofi", tipo="REGALOS")
+        self._u("sofi", "ADMIN", self.reg)
+        self._u("ayuda", "CAJERO", self.reg)
+        self.peluche = Producto.objects.create(negocio=self.reg, nombre="Peluche", precio=20000, costo=8000, stock=0)
+        self.login("sofi")
+        self.stock(self.peluche, 1)
+        self.cliente = self.ok(self.c.post("/api/clientes/", {"nombre": "Laura", "telefono": "3001234567"}, format="json"), 201)
+
+    def encargo(self, **extra):
+        body = {"cliente": self.cliente["id"], "fecha_entrega": str(hoy() + dt.timedelta(days=3)),
+                "items": [{"producto": self.peluche.id, "cantidad": 2},
+                          {"nombre": "Ancheta con foto", "precio": 60000, "costo": 25000}],
+                "pagos": [{"medio": "NEQUI", "monto": 30000}], "nota": "Para cumpleaños"}
+        body.update(extra)
+        return self.c.post("/api/encargos/", body, format="json")
+
+    def test_forma_de_vender_segun_tipo(self):
+        mods = self.ok(self.c.get("/api/mi-negocio/"))["modulos_activos"]
+        self.assertIn("encargos", mods)
+        self.assertNotIn("pedidos", mods)
+        self.assertNotIn("encargos", self.neg.modulos_activos)  # la cafetería no tiene encargos
+        self.assertIn("pedidos", self.neg.modulos_activos)
+        self.assertNotIn("pedidos", self.otro.modulos_activos)  # la tienda cobra directo
+        # Una cafetería no puede tomar encargos
+        self.login("dueno")
+        r = self.c.post("/api/encargos/", {}, format="json")
+        self.assertEqual(r.status_code, 403)
+
+    def test_ciclo_completo_del_encargo(self):
+        e = self.ok(self.encargo(), 201)
+        self.assertEqual((e["estado"], e["total"], e["saldo_pendiente"]), ("ENCARGO", 100000, 70000))
+        # Había 1 peluche: se aparta 1 y queda 1 por conseguir
+        self.peluche.refresh_from_db(); self.assertEqual(self.peluche.stock, 0)
+        self.assertEqual([float(d["por_conseguir"]) for d in e["detalles"]], [1.0, 0.0])
+        # El abono entra hoy a la plata, pero aún no es venta
+        r = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual((r["ventas_netas"], r["abonos_encargos"], r["abonos_fiado_cobrados"]), (0, 30000, 0))
+        self.assertEqual(r["encargos_por_entregar"]["falta_por_cobrar"], 70000)
+        dia = self.ok(self.c.get("/api/caja/dia/"))
+        self.assertEqual(dia["total_por_medio"]["NEQUI"], 30000)
+        # No aparece en la cola de pedidos ni en Fiados
+        self.assertEqual(self.ok(self.c.get("/api/clientes/deudores/"))["total_cartera"], 0)
+        # Otro abono, editar (subir la ancheta) y no se puede bajar de lo abonado
+        self.ok(self.c.post(f"/api/encargos/{e['id']}/abonar/", {"pagos": [{"medio": "EFECTIVO", "monto": 20000}]}, format="json"))
+        self.assertEqual(self.c.post(f"/api/encargos/{e['id']}/abonar/", {"pagos": [{"medio": "EFECTIVO", "monto": 60000}]}, format="json").status_code, 400)
+        v = self.ok(self.c.post(f"/api/encargos/{e['id']}/editar/", {"items": [
+            {"producto": self.peluche.id, "cantidad": 2}, {"nombre": "Ancheta con foto grande", "precio": 70000}],
+            "fecha_entrega": str(hoy() + dt.timedelta(days=5))}, format="json"))
+        self.assertEqual((v["total"], v["saldo_pendiente"]), (110000, 60000))
+        self.assertEqual(self.c.post(f"/api/encargos/{e['id']}/editar/", {"items": [{"nombre": "Tarjeta", "precio": 5000}]},
+                                     format="json").status_code, 400)
+        self.assertEqual(self.ok(self.c.get("/api/encargos/"))[0]["id"], e["id"])
+        # Llegó el otro peluche y se entrega: paga 50 mil y fía 10 mil
+        self.stock(self.peluche, 3)
+        v = self.ok(self.c.post(f"/api/encargos/{e['id']}/entregar/", {"pagos": [{"medio": "EFECTIVO", "monto": 50000}]}, format="json"))
+        self.assertEqual((v["estado"], v["saldo_pendiente"]), ("FIADO", 10000))
+        self.peluche.refresh_from_db(); self.assertEqual(self.peluche.stock, 2)
+        r = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual((r["ventas_netas"], r["fiado_otorgado_pendiente"], r["encargos_por_entregar"]["cantidad"]), (110000, 10000, 0))
+        self.assertEqual(self.ok(self.c.get("/api/clientes/deudores/"))["total_cartera"], 10000)
+        self.assertEqual(self.ok(self.c.get("/api/encargos/", {"estado": "entregados"}))[0]["id"], e["id"])
+        recibo = self.ok(self.c.get(f"/api/ventas/{e['id']}/recibo/"))["texto"]
+        self.assertIn("Ancheta con foto", recibo)
+        self.assertIn("Abono", recibo)
+
+    def test_validaciones_y_cancelar(self):
+        self.assertEqual(self.encargo(cliente=None).status_code, 400)
+        self.assertEqual(self.encargo(fecha_entrega=str(hoy() - dt.timedelta(days=1))).status_code, 400)
+        self.assertEqual(self.encargo(pagos=[{"medio": "EFECTIVO", "monto": 999999}]).status_code, 400)
+        self.assertEqual(self.encargo(items=[{"nombre": "", "precio": 1000}]).status_code, 400)
+        e = self.ok(self.encargo(), 201)
+        # La ayudante no cancela un encargo con abonos
+        self.login("ayuda")
+        self.assertEqual(self.c.post(f"/api/encargos/{e['id']}/cancelar/", {}, format="json").status_code, 403)
+        self.login("sofi")
+        v = self.ok(self.c.post(f"/api/encargos/{e['id']}/cancelar/", {"devolver_abonos": True, "motivo": "cambió de idea"}, format="json"))
+        self.assertEqual(v["estado"], "ANULADA")
+        self.peluche.refresh_from_db(); self.assertEqual(self.peluche.stock, 1)
+        dia = self.ok(self.c.get("/api/caja/dia/"))
+        self.assertEqual(dia["total_por_medio"]["NEQUI"], 0)  # se devolvió el abono
+        self.assertEqual(self.c.post(f"/api/encargos/{e['id']}/abonar/", {"pagos": [{"medio": "EFECTIVO", "monto": 1}]}, format="json").status_code, 400)
+
+    def test_venta_directa_con_algo_personalizado(self):
+        v = self.ok(self.c.post("/api/ventas/", {"items": [{"nombre": "Empaque de regalo", "precio": 5000}, {"producto": self.peluche.id}],
+                                                 "pagos": [{"medio": "EFECTIVO", "monto": 25000}]}, format="json"), 201)
+        self.assertEqual((v["estado"], v["total"]), ("PAGADA", 25000))
+        self.assertIsNotNone(v["entregado_en"])  # sin cola: se entrega de una
+        self.assertEqual(self.ok(self.c.get("/api/reportes/resumen/"))["ventas_netas"], 25000)

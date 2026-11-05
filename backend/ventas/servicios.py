@@ -1,3 +1,4 @@
+from collections import namedtuple
 from decimal import Decimal
 
 from django.db import transaction
@@ -17,28 +18,41 @@ from .models import Cliente, DetalleVenta, PagoVenta, Venta
 Origen = MovimientoCaja.Origen
 
 
+Linea = namedtuple("Linea", "producto cantidad precio subtotal nombre costo")
+
+
 def _lineas(negocio, items, existentes=()):
     """Valida los productos de una venta y calcula subtotal y costo.
+    Un ítem sin `producto` es algo personalizado: lleva `nombre` y `precio` (y `costo` si se sabe).
     `existentes`: ids que ya estaban en la venta (se permiten aunque el producto ya esté inactivo)."""
     if not items:
         raise ValidationError("La venta no tiene productos.")
-    ids = [int(i["producto"]) for i in items]
+    ids = [int(i["producto"]) for i in items if i.get("producto")]
     productos = {p.id: p for p in Producto.objects.filter(negocio=negocio, id__in=ids)}
     lineas, subtotal, costo = [], CERO, CERO
     for it in items:
-        p = productos.get(int(it["producto"]))
-        if not p or (not p.activo and p.id not in existentes):
-            raise ValidationError("Hay productos que no existen o están inactivos.")
+        if it.get("producto"):
+            p = productos.get(int(it["producto"]))
+            if not p or (not p.activo and p.id not in existentes):
+                raise ValidationError("Hay productos que no existen o están inactivos.")
+            nombre, costo_u = p.nombre, p.costo
+        else:
+            p, nombre = None, (it.get("nombre") or "").strip()[:120]
+            if not nombre or it.get("precio") in (None, ""):
+                raise ValidationError("Lo personalizado necesita una descripción y un precio.")
+            costo_u = Decimal(str(it.get("costo") or 0))
+            if costo_u < 0:
+                raise ValidationError("Costo inválido.")
         cant = Decimal(str(it.get("cantidad", 1)))
         if cant <= 0:
-            raise ValidationError(f"Cantidad inválida para {p.nombre}.")
+            raise ValidationError(f"Cantidad inválida para {nombre}.")
         precio = Decimal(str(it["precio"])) if it.get("precio") not in (None, "") else p.precio
         if precio < 0:
             raise ValidationError("Precio inválido.")
         sub = (precio * cant).quantize(Decimal("0.01"))
-        lineas.append((p, cant, precio, sub))
+        lineas.append(Linea(p, cant, precio, sub, nombre, costo_u))
         subtotal += sub
-        costo += p.costo * cant
+        costo += costo_u * cant
     return lineas, subtotal, costo.quantize(Decimal("0.01"))
 
 
@@ -78,19 +92,28 @@ def _cambio(pagos_limpios, efectivo_recibido):
     return efectivo_recibido, efectivo_recibido - efectivo
 
 
-def _guardar_detalles(venta, lineas, usuario, validar_stock, referencia):
-    for p, cant, precio, sub in lineas:
-        DetalleVenta.objects.create(venta=venta, producto=p, nombre=p.nombre, cantidad=cant,
-                                    precio_unitario=precio, costo_unitario=p.costo, subtotal=sub)
-        if p.controla_stock:
-            mover_stock(p, cant, MovimientoInventario.Tipo.VENTA, usuario=usuario,
+def _guardar_detalles(venta, lineas, usuario, validar_stock, referencia, encargo=False):
+    """Guarda las líneas y descuenta inventario. En un encargo se toma solo lo que hay en stock;
+    lo que falta queda 'por conseguir' y se descuenta al entregarlo."""
+    for ln in lineas:
+        p, cant = ln.producto, ln.cantidad
+        tomar, falta = cant, CERO
+        if encargo and p and p.controla_stock:
+            disponible = max(Producto.objects.get(pk=p.pk).stock, CERO)
+            tomar = min(cant, disponible)
+            falta = cant - tomar
+        DetalleVenta.objects.create(venta=venta, producto=p, nombre=ln.nombre, cantidad=cant, por_conseguir=falta,
+                                    precio_unitario=ln.precio, costo_unitario=ln.costo, subtotal=ln.subtotal)
+        if p and p.controla_stock and tomar > 0:
+            mover_stock(p, tomar, MovimientoInventario.Tipo.VENTA, usuario=usuario,
                         referencia=referencia, validar_stock=validar_stock)
 
 
 def _devolver_stock(venta, usuario, referencia):
     for d in venta.detalles.select_related("producto"):
-        if d.producto.controla_stock:
-            mover_stock(d.producto, d.cantidad, MovimientoInventario.Tipo.ANULACION_VENTA,
+        devolver = d.cantidad - d.por_conseguir
+        if d.producto and d.producto.controla_stock and devolver > 0:
+            mover_stock(d.producto, devolver, MovimientoInventario.Tipo.ANULACION_VENTA,
                         usuario=usuario, referencia=referencia)
 
 
@@ -155,7 +178,8 @@ def crear_venta(negocio, usuario, items, pagos, descuento=0, cliente=None,
 
     # Turno corto que se reinicia cada día ("¡Turno 14!"); sale de la cola al entregarse
     turno = None if momento is not None else Consecutivo.siguiente(negocio, f"turno-{timezone.localdate():%Y%m%d}")
-    entregado = momento is not None or entregar_ya or not negocio.usa_cola_pedidos
+    # Sin cola (tiendas, o si el negocio la apagó) la venta sale entregada de una
+    entregado = momento is not None or entregar_ya or not negocio.usa_cola
     estado = Venta.Estado.ABIERTA if registrar else (Venta.Estado.FIADO if saldo > 0 else Venta.Estado.PAGADA)
     venta = Venta.objects.create(
         negocio=negocio, numero=Consecutivo.siguiente(negocio, "venta"), sesion_caja=sesion, turno=turno,
@@ -211,6 +235,8 @@ def editar_venta(negocio, usuario, venta, items, descuento=None, nota=None, pago
     if not abierta and _sesion_cerrada(venta):
         raise ValidationError("La caja de esa venta ya se cerró; su dinero no se puede cambiar.")
 
+    if venta.estado == Venta.Estado.ENCARGO:
+        raise ValidationError("Los encargos se editan desde Encargos.")
     existentes = set(venta.detalles.values_list("producto_id", flat=True))
     lineas, subtotal, costo = _lineas(negocio, items, existentes)
     descuento = venta.descuento if descuento is None else Decimal(str(descuento or 0))
@@ -345,10 +371,7 @@ def anular_venta(negocio, usuario, venta, motivo):
         raise ValidationError("Indica el motivo de la anulación.")
     sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
 
-    for d in venta.detalles.select_related("producto"):
-        if d.producto.controla_stock:
-            mover_stock(d.producto, d.cantidad, MovimientoInventario.Tipo.ANULACION_VENTA,
-                        usuario=usuario, referencia=f"Anula venta #{venta.numero}")
+    _devolver_stock(venta, usuario, f"Anula venta #{venta.numero}")
     # Devuelve el dinero recibido (venta + abonos) por el mismo medio
     for pago in venta.pagos.all():
         caja.registrar(negocio, Origen.ANULACION, -pago.monto, medio=pago.medio,
@@ -359,6 +382,158 @@ def anular_venta(negocio, usuario, venta, motivo):
     venta.saldo_pendiente = CERO
     venta.anulada_por = usuario
     venta.motivo_anulacion = motivo[:200]
+    venta.save()
+    return venta
+
+
+# ---------- Encargos (tienda de regalos) ----------
+# Un encargo es una venta con fecha de entrega. Cada abono entra a la caja del día en que se paga,
+# pero la venta cuenta en reportes el día que se entrega (ahí se mueve su fecha a ese día).
+
+def _fecha_entrega(fecha):
+    import datetime as dt
+    if fecha in (None, ""):
+        raise ValidationError("Pon la fecha de entrega del encargo.")
+    if isinstance(fecha, str):
+        fecha = dt.date.fromisoformat(fecha)
+    if fecha < timezone.localdate():
+        raise ValidationError("La fecha de entrega no puede ser de un día que ya pasó.")
+    return fecha
+
+
+def _abonar(venta, pagos_limpios, usuario, sesion):
+    for medio, monto in pagos_limpios:
+        PagoVenta.objects.create(negocio=venta.negocio, venta=venta, medio=medio, monto=monto, es_abono=True,
+                                 sesion_caja=sesion, usuario=usuario)
+        caja.registrar(venta.negocio, Origen.ABONO_ENCARGO, monto, medio=medio,
+                       concepto=f"Abono encargo #{venta.numero}"[:200], referencia=str(venta.id),
+                       usuario=usuario, sesion=sesion)
+
+
+def _encargo(negocio, venta):
+    venta = Venta.objects.select_for_update(of=("self",)).get(pk=venta.pk, negocio=negocio)
+    if venta.estado != Venta.Estado.ENCARGO:
+        raise ValidationError("Este encargo ya se entregó o se canceló.")
+    return venta
+
+
+@transaction.atomic
+def crear_encargo(negocio, usuario, items, cliente, fecha_entrega, pagos=None, descuento=0, nota=""):
+    if not negocio.tiene_modulo("encargos"):
+        raise ValidationError("Este negocio no tiene encargos activos.")
+    if not cliente:
+        raise ValidationError("Elige o crea el cliente del encargo.")
+    fecha_entrega = _fecha_entrega(fecha_entrega)
+    lineas, subtotal, costo_total = _lineas(negocio, items)
+    descuento = Decimal(str(descuento or 0))
+    if descuento < 0 or descuento > subtotal:
+        raise ValidationError("Descuento inválido.")
+    total = subtotal - descuento
+    pagos_limpios, abonado = _pagos(negocio, pagos)
+    if abonado > total:
+        raise ValidationError(f"El abono ({pesos(abonado)}) supera el total del encargo ({pesos(total)}).")
+    sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja and abonado > 0)
+    venta = Venta.objects.create(
+        negocio=negocio, numero=Consecutivo.siguiente(negocio, "venta"), usuario=usuario, cliente=cliente,
+        origen=Venta.Origen.ENCARGO, estado=Venta.Estado.ENCARGO, fecha_entrega=fecha_entrega,
+        encargado_en=timezone.now(), subtotal=subtotal, descuento=descuento, total=total,
+        costo_total=costo_total, saldo_pendiente=total - abonado, nota=nota[:200],
+    )
+    _guardar_detalles(venta, lineas, usuario, False, f"Encargo #{venta.numero}", encargo=True)
+    _abonar(venta, pagos_limpios, usuario, sesion)
+    return venta
+
+
+@transaction.atomic
+def abonar_encargo(negocio, usuario, venta, pagos):
+    venta = _encargo(negocio, venta)
+    pagos_limpios, monto = _pagos(negocio, pagos)
+    if monto <= 0:
+        raise ValidationError("El abono debe ser mayor a cero.")
+    if monto > venta.saldo_pendiente:
+        raise ValidationError(f"El abono supera lo que falta ({pesos(venta.saldo_pendiente)}).")
+    sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
+    _abonar(venta, pagos_limpios, usuario, sesion)
+    venta.saldo_pendiente -= monto
+    venta.save(update_fields=["saldo_pendiente", "actualizado"])
+    return venta
+
+
+@transaction.atomic
+def editar_encargo(negocio, usuario, venta, items=None, fecha_entrega=None, nota=None, descuento=None, cliente=None):
+    """Cambia lo encargado, la fecha o la nota. Lo ya abonado se mantiene."""
+    venta = _encargo(negocio, venta)
+    abonado = venta.total - venta.saldo_pendiente
+    if items is not None:
+        existentes = set(venta.detalles.exclude(producto=None).values_list("producto_id", flat=True))
+        lineas, subtotal, costo = _lineas(negocio, items, existentes)
+        descuento = venta.descuento if descuento is None else Decimal(str(descuento or 0))
+        if descuento < 0 or descuento > subtotal:
+            raise ValidationError("Descuento inválido.")
+        total = subtotal - descuento
+        if total < abonado:
+            raise ValidationError(f"Ya abonaron {pesos(abonado)}; el encargo no puede quedar en menos.")
+        _devolver_stock(venta, usuario, f"Edición encargo #{venta.numero}")
+        venta.detalles.all().delete()
+        _guardar_detalles(venta, lineas, usuario, False, f"Edición encargo #{venta.numero}", encargo=True)
+        venta.subtotal, venta.descuento, venta.total, venta.costo_total = subtotal, descuento, total, costo
+        venta.saldo_pendiente = total - abonado
+    if fecha_entrega not in (None, ""):
+        venta.fecha_entrega = _fecha_entrega(fecha_entrega)
+    if nota is not None:
+        venta.nota = nota[:200]
+    if cliente is not None:
+        venta.cliente = cliente
+    venta.editada_en, venta.editada_por = timezone.now(), usuario
+    venta.save()
+    return venta
+
+
+@transaction.atomic
+def entregar_encargo(negocio, usuario, venta, pagos=None, efectivo_recibido=None):
+    """Entrega el encargo: cobra lo que falte (o lo deja fiado al cliente) y desde hoy cuenta como venta."""
+    venta = _encargo(negocio, venta)
+    sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
+    pagos_limpios, pagado = _pagos(negocio, pagos)
+    if pagado > venta.saldo_pendiente:
+        raise ValidationError(f"Solo faltan {pesos(venta.saldo_pendiente)}. El cambio se calcula con el efectivo recibido.")
+    saldo = venta.saldo_pendiente - pagado
+    _validar_saldo(negocio, saldo, venta.cliente)
+    # Lo que no había al tomar el encargo sale ahora del inventario
+    for d in venta.detalles.select_related("producto").filter(por_conseguir__gt=0):
+        if d.producto and d.producto.controla_stock:
+            mover_stock(d.producto, d.por_conseguir, MovimientoInventario.Tipo.VENTA, usuario=usuario,
+                        referencia=f"Entrega encargo #{venta.numero}", validar_stock=negocio.bloquear_sin_stock)
+        d.por_conseguir = CERO
+        d.save(update_fields=["por_conseguir"])
+    _cobrar(venta, pagos_limpios, usuario, None, sesion)
+    ahora = timezone.now()
+    venta.efectivo_recibido, venta.cambio = _cambio(pagos_limpios, efectivo_recibido)
+    venta.saldo_pendiente = saldo
+    venta.estado = Venta.Estado.FIADO if saldo > 0 else Venta.Estado.PAGADA
+    venta.entregado_en, venta.entregado_por, venta.sesion_caja = ahora, usuario, sesion
+    venta.save()
+    Venta.objects.filter(pk=venta.pk).update(creado=ahora)  # cuenta como venta del día de entrega
+    venta.creado = ahora
+    return venta
+
+
+@transaction.atomic
+def cancelar_encargo(negocio, usuario, venta, devolver_abonos=True, motivo=""):
+    """Cancela el encargo y devuelve el inventario. Lo abonado se devuelve hoy (sale de la caja)
+    o, si el cliente lo pierde, se queda como ingreso."""
+    venta = _encargo(negocio, venta)
+    _devolver_stock(venta, usuario, f"Cancela encargo #{venta.numero}")
+    abonado = venta.total - venta.saldo_pendiente
+    if devolver_abonos and abonado > 0:
+        sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
+        for pago in venta.pagos.all():
+            caja.registrar(negocio, Origen.ANULACION, -pago.monto, medio=pago.medio,
+                           concepto=f"Devolución encargo #{venta.numero}", referencia=str(venta.id),
+                           usuario=usuario, sesion=sesion)
+    venta.estado, venta.saldo_pendiente = Venta.Estado.ANULADA, CERO
+    venta.anulada_por = usuario
+    venta.motivo_anulacion = (motivo or "Encargo cancelado")[:200] + ("" if devolver_abonos or not abonado else " (abono no devuelto)")
     venta.save()
     return venta
 
@@ -392,12 +567,16 @@ def texto_recibo(venta, ancho=32):
     if venta.descuento:
         filas += [total("Subtotal", venta.subtotal), total("Descuento", -venta.descuento)]
     filas.append(total("TOTAL", venta.total))
-    for p in venta.pagos.filter(es_abono=False):
-        filas.append(total(p.get_medio_display(), p.monto))
+    es_encargo = venta.origen == Venta.Origen.ENCARGO
+    for p in (venta.pagos.all() if es_encargo else venta.pagos.filter(es_abono=False)):
+        etq = f"Abono {timezone.localtime(p.creado):%d/%m}" if p.es_abono else p.get_medio_display()
+        filas.append(total(etq[:ancho - 12], p.monto))
+    if es_encargo and venta.fecha_entrega:
+        filas.append(f"Entrega: {venta.fecha_entrega:%d/%m/%Y}")
     if venta.cambio:
         filas.append(total("Cambio", venta.cambio))
     if venta.saldo_pendiente:
-        filas.append(total("SALDO PENDIENTE", venta.saldo_pendiente))
+        filas.append(total("FALTA POR PAGAR" if venta.estado == Venta.Estado.ENCARGO else "SALDO PENDIENTE", venta.saldo_pendiente))
     if venta.estado == Venta.Estado.ANULADA:
         filas.append("*** VENTA ANULADA ***")
     filas += [linea, "Documento no fiscal", n.mensaje_recibo[:ancho] if n.mensaje_recibo else ""]
@@ -411,8 +590,14 @@ def link_recibo(venta):
 
 def whatsapp_recibo(venta, telefono=None):
     tel = telefono or (venta.cliente.telefono if venta.cliente else "")
-    texto = (f"Hola, este es tu recibo #{venta.numero} de {venta.negocio.nombre} "
-             f"por {pesos(venta.total)}: {link_recibo(venta)}")
+    if venta.estado == Venta.Estado.ENCARGO:
+        abonado = venta.total - venta.saldo_pendiente
+        texto = (f"Hola, te confirmamos tu encargo #{venta.numero} en {venta.negocio.nombre} para el "
+                 f"{venta.fecha_entrega:%d/%m/%Y}. Total {pesos(venta.total)}, abonado {pesos(abonado)}, "
+                 f"falta {pesos(venta.saldo_pendiente)}: {link_recibo(venta)}")
+    else:
+        texto = (f"Hola, este es tu recibo #{venta.numero} de {venta.negocio.nombre} "
+                 f"por {pesos(venta.total)}: {link_recibo(venta)}")
     return link_whatsapp(tel, texto)
 
 

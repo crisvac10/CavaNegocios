@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
-  BarChart3, Boxes, CalendarCheck, ChefHat, HandCoins, Landmark, LogOut, Menu, Receipt, Settings, ShoppingBasket, X,
+  BarChart3, Boxes, CalendarCheck, ChefHat, Gift, HandCoins, Landmark, LogOut, Menu, Receipt, Settings, ShoppingBasket, X,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useSesion } from "../context/Sesion";
@@ -10,6 +10,7 @@ import { useSesion } from "../context/Sesion";
 const NAV = [
   { a: "/vender", texto: "Vender", Icono: ShoppingBasket, modulo: "pos" },
   { a: "/pedidos", texto: "Pedidos", Icono: ChefHat, modulo: "pedidos", cola: true },
+  { a: "/encargos", texto: "Encargos", Icono: Gift, modulo: "encargos" },
   { a: "/hoy", texto: "Hoy", Icono: CalendarCheck, modulo: "caja" },
   { a: "/fiados", texto: "Fiados", Icono: HandCoins, modulo: "fiados" },
   { a: "/gastos", texto: "Gastos", Icono: Receipt, modulo: "gastos" },

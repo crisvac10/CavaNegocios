@@ -43,6 +43,7 @@ class MovimientoCaja(TenantModel):
     class Origen(models.TextChoices):
         VENTA = "VENTA", "Venta"
         ABONO_FIADO = "ABONO_FIADO", "Abono de fiado"
+        ABONO_ENCARGO = "ABONO_ENCARGO", "Abono de encargo"
         ANULACION = "ANULACION", "Anulación de venta"
         GASTO = "GASTO", "Gasto"
         COMPRA = "COMPRA", "Compra a proveedor"

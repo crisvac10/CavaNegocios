@@ -16,7 +16,7 @@ function sugerenciasBillete(total) {
   return [...opciones].sort((a, b) => a - b).slice(0, 5);
 }
 
-function SelectorCliente({ cliente, onElegir }) {
+export function SelectorCliente({ cliente, onElegir }) {
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [nuevo, setNuevo] = useState(null);
@@ -104,7 +104,11 @@ function SelectorCliente({ cliente, onElegir }) {
   );
 }
 
-export default function Cobro({ total, items, descuento, negocio, extra = {}, onListo, onCerrar, ventaId, detalle, titulo, clienteInicial }) {
+export default function Cobro({
+  total, items, descuento, negocio, extra = {}, onListo, onCerrar, ventaId, detalle, titulo, clienteInicial,
+  url, // otra ruta de cobro (ej. entregar un encargo): recibe {pagos, efectivo_recibido}
+  textoBoton, etiquetaTotal = "Total",
+}) {
   const medios = negocio.medios_pago_activos;
   const [modo, setModo] = useState("pago"); // pago | fiar
   const [medio, setMedio] = useState(medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0]);
@@ -132,8 +136,8 @@ export default function Cobro({ total, items, descuento, negocio, extra = {}, on
   const recibidoCorto = efectivo > 0 && recibido > 0 && recibido < efectivo;
 
   const vender = useMutation({
-    mutationFn: () => ventaId
-      ? api(`/ventas/${ventaId}/cobrar/`, {
+    mutationFn: () => ventaId || url
+      ? api(url || `/ventas/${ventaId}/cobrar/`, {
           method: "POST",
           body: {
             pagos,
@@ -168,7 +172,7 @@ export default function Cobro({ total, items, descuento, negocio, extra = {}, on
             ))}
           </ul>
           <p className="mt-3 flex items-baseline justify-between border-t border-dashed border-linea pt-2">
-            <span className="font-semibold">Total</span>
+            <span className="font-semibold">{etiquetaTotal}</span>
             <span className="font-display text-2xl font-extrabold text-tinta num">{pesos(total)}</span>
           </p>
         </div>
@@ -297,7 +301,7 @@ export default function Cobro({ total, items, descuento, negocio, extra = {}, on
           data-autofocus
         >
           {modo === "fiar" ? <HandCoins size={22} aria-hidden /> : <Check size={22} aria-hidden />}
-          {vender.isPending ? "Registrando…" : modo === "fiar" ? "Registrar fiado" : "Registrar venta"}
+          {vender.isPending ? "Registrando…" : modo === "fiar" ? "Registrar fiado" : textoBoton || "Registrar venta"}
         </Boton>
       </div>
     </Hoja>

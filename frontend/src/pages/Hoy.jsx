@@ -86,6 +86,7 @@ function FilaVenta({ v, negocio, esAdmin, abierta, onAbrir, onEditar, onCobrar }
 const ORIGENES = {
   VENTA: "Ventas",
   ABONO_FIADO: "Abonos de fiados",
+  ABONO_ENCARGO: "Abonos de encargos",
   ANULACION: "Ventas anuladas",
   GASTO: "Gastos",
   COMPRA: "Compras a proveedores",

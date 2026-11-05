@@ -26,7 +26,8 @@ def ventas_validas(negocio, desde, hasta):
     from ventas.models import Venta
     ini, fin = rango_fechas(desde, hasta)
     return (Venta.objects.filter(negocio=negocio, creado__gte=ini, creado__lt=fin)
-            .exclude(estado=Venta.Estado.ANULADA).exclude(origen=Venta.Origen.SALDO_ANTERIOR))
+            .exclude(estado__in=[Venta.Estado.ANULADA, Venta.Estado.ENCARGO])  # un encargo cuenta al entregarse
+            .exclude(origen=Venta.Origen.SALDO_ANTERIOR))
 
 
 def serie_diaria(negocio, desde, hasta):
@@ -84,7 +85,10 @@ def resumen(negocio, desde, hasta):
 
     pagos = PagoVenta.objects.filter(negocio=negocio, creado__gte=ini, creado__lt=fin).exclude(venta__estado=Venta.Estado.ANULADA)
     por_medio = {f["medio"]: f["t"] for f in pagos.values("medio").annotate(t=Sum("monto"))}
-    abonos = pagos.filter(es_abono=True).aggregate(t=Sum("monto"))["t"] or CERO
+    abonos = pagos.filter(es_abono=True).exclude(venta__origen=Venta.Origen.ENCARGO).aggregate(t=Sum("monto"))["t"] or CERO
+    abonos_encargos = pagos.filter(es_abono=True, venta__origen=Venta.Origen.ENCARGO).aggregate(t=Sum("monto"))["t"] or CERO
+    pend = Venta.objects.filter(negocio=negocio, estado=Venta.Estado.ENCARGO).aggregate(
+        t=Sum("total"), s=Sum("saldo_pendiente"), n=Count("id"))
     cartera = (Venta.objects.filter(negocio=negocio, estado=Venta.Estado.FIADO).aggregate(t=Sum("saldo_pendiente"))["t"] or CERO)
 
     operativa = neto - costo - gastos
@@ -107,6 +111,9 @@ def resumen(negocio, desde, hasta):
         "fiado_otorgado_pendiente": agg["fiado"] or CERO,
         "pedidos_por_cobrar": {"total": por_cobrar["t"] or CERO, "cantidad": por_cobrar["n"] or 0},
         "abonos_fiado_cobrados": abonos,
+        "abonos_encargos": abonos_encargos,
+        "encargos_por_entregar": {"cantidad": pend["n"] or 0, "total": pend["t"] or CERO,
+                                  "falta_por_cobrar": pend["s"] or CERO},
         "cartera_total": cartera,
         "compras_mercancia": compras,
         "no_operativo": {

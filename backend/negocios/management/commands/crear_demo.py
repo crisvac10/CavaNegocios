@@ -92,5 +92,37 @@ class Command(BaseCommand):
             "monto": 4_000_000, "tasa": 28, "tipo_tasa": "EA", "sistema": "FRANCES", "frecuencia": "MENSUAL",
             "num_cuotas": 12, "fecha_desembolso": hoy(), "fecha_primera_cuota": hoy() + dt.timedelta(days=30),
         })
+        self._tienda_regalos()
         self.stdout.write(self.style.SUCCESS(
-            "Listo. Super Admin: cavatech/cavatech123 | Dueño: demo/demo1234 | Cajero: cajero/demo1234"))
+            "Listo. Super Admin: cavatech/cavatech123 | Dueño: demo/demo1234 | Cajero: cajero/demo1234 "
+            "| Tienda de regalos: regalos/demo1234"))
+
+    def _tienda_regalos(self):
+        from ventas.models import Cliente
+        from ventas.servicios import crear_encargo
+        n = Negocio.objects.create(nombre="Detalles Demo", slug="detalles-demo", tipo=Negocio.Tipo.REGALOS,
+                                   color_primario="#9E3A63", color_acento="#FFD6E5")
+        dueno = Usuario.objects.create_user("regalos", password="demo1234", rol=Usuario.Rol.ADMIN, negocio=n)
+        catalogo = {
+            "Peluches": [("Oso de peluche mediano", 35000, 15000, 4), ("Conejo de peluche", 28000, 12000, 0)],
+            "Flores": [("Rosa en caja", 18000, 7000, 20), ("Ramo de girasoles", 45000, 20000, 6)],
+            "Detalles": [("Taza personalizada", 25000, 9000, 10), ("Chocolates surtidos", 15000, 6000, 15),
+                         ("Tarjeta", 4000, 800, 50), ("Globo metalizado", 8000, 3000, 25)],
+        }
+        prods = {}
+        for orden, (cat, items) in enumerate(catalogo.items()):
+            c = Categoria.objects.create(negocio=n, nombre=cat, orden=orden)
+            for nombre, precio, costo, stock in items:
+                p = Producto.objects.create(negocio=n, categoria=c, nombre=nombre, precio=precio, costo=costo, stock_minimo=2)
+                if stock:
+                    mover_stock(p, stock, MovimientoInventario.Tipo.AJUSTE_ENTRADA, usuario=dueno, nota="Stock inicial")
+                prods[nombre] = p
+        laura = Cliente.objects.create(negocio=n, nombre="Laura Gómez", telefono="3109876543")
+        andres = Cliente.objects.create(negocio=n, nombre="Andrés Ruiz", telefono="3014567890")
+        crear_encargo(n, dueno, [{"producto": prods["Ramo de girasoles"].id}, {"producto": prods["Chocolates surtidos"].id},
+                                 {"nombre": "Ancheta de cumpleaños con foto", "precio": 85000, "costo": 40000}],
+                      laura, hoy() + dt.timedelta(days=2), [{"medio": "NEQUI", "monto": 70000}], nota="Tarjeta: Feliz cumple, mamá")
+        crear_encargo(n, dueno, [{"producto": prods["Conejo de peluche"].id, "cantidad": 2}, {"producto": prods["Globo metalizado"].id}],
+                      andres, hoy(), [{"medio": "EFECTIVO", "monto": 20000}])
+        crear_venta(n, dueno, [{"producto": prods["Rosa en caja"].id}, {"producto": prods["Tarjeta"].id}],
+                    [{"medio": "EFECTIVO", "monto": 22000}])

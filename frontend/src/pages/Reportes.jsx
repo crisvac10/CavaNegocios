@@ -5,6 +5,7 @@ import { api, descargar } from "../lib/api";
 import { fechaCorta, hoyISO, MEDIOS, numero, periodo, pesos } from "../lib/formato";
 import GraficaDias from "../components/Grafica";
 import { Aviso, Boton } from "../components/ui";
+import { useSesion } from "../context/Sesion";
 
 const PERIODOS = [["hoy", "Hoy"], ["7d", "7 días"], ["30d", "30 días"], ["mes", "Este mes"], ["mes_pasado", "Mes pasado"]];
 
@@ -23,6 +24,7 @@ function Fila({ nombre, valor, fuerte, resta, nota }) {
 }
 
 export default function Reportes() {
+  const { tieneModulo } = useSesion();
   const [per, setPer] = useState("mes");
   const [rango, setRango] = useState(periodo("mes"));
   const [errorDescarga, setErrorDescarga] = useState("");
@@ -171,6 +173,15 @@ export default function Reportes() {
               <Fila nombre="Fiado en el periodo, aún sin pagar" valor={r.fiado_otorgado_pendiente} />
               <Fila nombre="Abonos cobrados en el periodo" valor={r.abonos_fiado_cobrados} />
               <Fila nombre="Te deben hoy en total" valor={r.cartera_total} fuerte />
+              {tieneModulo("encargos") && (
+                <>
+                  <h3 className="mb-2 mt-5 font-semibold">Encargos</h3>
+                  <Fila nombre="Abonos recibidos en el periodo" valor={r.abonos_encargos} />
+                  <Fila nombre={`Por entregar (${r.encargos_por_entregar.cantidad})`} valor={r.encargos_por_entregar.total} />
+                  <Fila nombre="Falta por cobrar de esos encargos" valor={r.encargos_por_entregar.falta_por_cobrar} fuerte />
+                  <p className="mt-2 text-xs text-suave">Un encargo cuenta como venta el día que se entrega.</p>
+                </>
+              )}
               {r.gastos_por_categoria.length > 0 && (
                 <>
                   <h3 className="mb-2 mt-5 font-semibold">Gastos por categoría</h3>

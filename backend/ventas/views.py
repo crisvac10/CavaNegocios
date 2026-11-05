@@ -28,7 +28,7 @@ class ClienteSerializer(serializers.ModelSerializer):
 class DetalleSerializer(serializers.ModelSerializer):
     class Meta:
         model = DetalleVenta
-        fields = ["producto", "nombre", "cantidad", "precio_unitario", "subtotal"]
+        fields = ["producto", "nombre", "cantidad", "precio_unitario", "subtotal", "por_conseguir"]
 
 
 class PagoSerializer(serializers.ModelSerializer):
@@ -41,6 +41,7 @@ class VentaSerializer(serializers.ModelSerializer):
     detalles = DetalleSerializer(many=True, read_only=True)
     pagos = PagoSerializer(many=True, read_only=True)
     cliente_nombre = serializers.CharField(source="cliente.nombre", read_only=True, default=None)
+    cliente_telefono = serializers.CharField(source="cliente.telefono", read_only=True, default=None)
     usuario = serializers.CharField(source="usuario.username", read_only=True)
     utilidad = serializers.SerializerMethodField()
 
@@ -48,7 +49,8 @@ class VentaSerializer(serializers.ModelSerializer):
         model = Venta
         fields = ["id", "numero", "turno", "mesa", "entregado_en", "estado", "origen", "editada_en", "cliente", "cliente_nombre", "usuario", "subtotal", "descuento",
                   "total", "saldo_pendiente", "efectivo_recibido", "cambio", "nota", "utilidad",
-                  "detalles", "pagos", "motivo_anulacion", "token_publico", "creado"]
+                  "detalles", "pagos", "motivo_anulacion", "token_publico", "creado",
+                  "fecha_entrega", "encargado_en", "cliente_telefono"]
 
     def get_utilidad(self, v):
         # El cajero no ve costos/utilidad
@@ -57,7 +59,9 @@ class VentaSerializer(serializers.ModelSerializer):
 
 
 class ItemEntrada(serializers.Serializer):
-    producto = serializers.IntegerField()
+    producto = serializers.IntegerField(required=False, allow_null=True)  # vacío = algo personalizado
+    nombre = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    costo = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
     cantidad = serializers.DecimalField(max_digits=14, decimal_places=3, default=1)
     precio = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
 
@@ -95,6 +99,23 @@ class EdicionEntrada(serializers.Serializer):
     fecha = serializers.DateField(required=False, allow_null=True)
     efectivo_recibido = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
     mesa = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=12)
+
+
+class EncargoEntrada(serializers.Serializer):
+    items = ItemEntrada(many=True)
+    cliente = serializers.IntegerField()
+    fecha_entrega = serializers.DateField()
+    pagos = PagoEntrada(many=True, required=False, default=list)  # abono inicial
+    descuento = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, default=0)
+    nota = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class EdicionEncargoEntrada(serializers.Serializer):
+    items = ItemEntrada(many=True, required=False)
+    cliente = serializers.IntegerField(required=False, allow_null=True)
+    fecha_entrega = serializers.DateField(required=False, allow_null=True)
+    descuento = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
+    nota = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class DeudaAnteriorEntrada(serializers.Serializer):
@@ -150,7 +171,7 @@ class ClienteViewSet(TenantMixin, viewsets.ModelViewSet):
     @action(detail=True)
     def estado_cuenta(self, request, pk=None):
         c = self.get_object()
-        ventas = c.ventas.exclude(estado=Venta.Estado.ANULADA).prefetch_related("detalles", "pagos")
+        ventas = c.ventas.exclude(estado__in=[Venta.Estado.ANULADA, Venta.Estado.ENCARGO]).prefetch_related("detalles", "pagos")
         return Response({"cliente": ClienteSerializer(c).data,
                          "ventas": VentaSerializer(ventas, many=True, context={"request": request}).data})
 
@@ -187,6 +208,8 @@ class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
             qs = qs.filter(creado__gte=ini, creado__lt=fin)
         if p.get("estado"):
             qs = qs.filter(estado=p["estado"])
+        elif self.action == "list":
+            qs = qs.exclude(estado=Venta.Estado.ENCARGO)  # los encargos sin entregar viven en /encargos/
         if p.get("sesion"):
             qs = qs.filter(sesion_caja_id=p["sesion"])
         if p.get("numero"):
@@ -302,7 +325,8 @@ class PedidoViewSet(TenantMixin, viewsets.GenericViewSet):
     modulo = "pedidos"
 
     def get_queryset(self):
-        return super().get_queryset().exclude(estado=Venta.Estado.ANULADA)
+        # Los encargos tienen su propia pantalla (no pasan por la cola de cocina)
+        return super().get_queryset().exclude(estado__in=[Venta.Estado.ANULADA, Venta.Estado.ENCARGO])
 
     @staticmethod
     def _dato(v):
@@ -341,6 +365,90 @@ class PedidoViewSet(TenantMixin, viewsets.GenericViewSet):
         return Response(self._dato(v))
 
 
+class EncargoViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    Encargos (tienda de regalos): se toman con fecha de entrega y abonos, y se cobran al entregarse.
+    GET  /encargos/                       por entregar, por fecha de entrega
+    GET  /encargos/?estado=entregados     entregados (últimos 100)
+    POST /encargos/                       {items, cliente, fecha_entrega, pagos (abono), descuento, nota}
+    POST /encargos/{id}/abonar/           {pagos}
+    POST /encargos/{id}/entregar/         {pagos (lo que falta), efectivo_recibido}
+    POST /encargos/{id}/editar/           {items?, fecha_entrega?, nota?, descuento?, cliente?}
+    POST /encargos/{id}/cancelar/         {devolver_abonos, motivo}
+    """
+    queryset = (Venta.objects.filter(origen=Venta.Origen.ENCARGO)
+                .select_related("cliente", "usuario").prefetch_related("detalles", "pagos"))
+    serializer_class = VentaSerializer
+    modulo = "encargos"
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action != "list":
+            return qs
+        estado = self.request.query_params.get("estado")
+        if estado == "entregados":
+            return qs.exclude(estado__in=[Venta.Estado.ENCARGO, Venta.Estado.ANULADA]).order_by("-entregado_en")[:100]
+        if estado == "cancelados":
+            return qs.filter(estado=Venta.Estado.ANULADA).order_by("-actualizado")[:100]
+        return qs.filter(estado=Venta.Estado.ENCARGO).order_by("fecha_entrega", "encargado_en")
+
+    def _cliente(self, cid):
+        c = Cliente.objects.filter(negocio=self.negocio, pk=cid).first() if cid else None
+        if cid and not c:
+            raise ValidationError({"cliente": "No existe."})
+        return c
+
+    def _ok(self, v, status=200):
+        data = VentaSerializer(v, context={"request": self.request}).data
+        data["whatsapp_recibo"] = servicios.whatsapp_recibo(v)
+        return Response(data, status=status)
+
+    def list(self, request):
+        datos = VentaSerializer(self.get_queryset(), many=True, context={"request": request}).data
+        for d, v in zip(datos, self.get_queryset()):
+            d["whatsapp_recibo"] = servicios.whatsapp_recibo(v)
+        return Response(datos)
+
+    def create(self, request):
+        e = EncargoEntrada(data=request.data)
+        e.is_valid(raise_exception=True)
+        d = e.validated_data
+        v = servicios.crear_encargo(self.negocio, request.user, d["items"], self._cliente(d["cliente"]),
+                                    d["fecha_entrega"], d.get("pagos"), d.get("descuento"), d.get("nota", ""))
+        return self._ok(v, 201)
+
+    @action(detail=True, methods=["post"])
+    def abonar(self, request, pk=None):
+        e = CobroEntrada(data=request.data)
+        e.is_valid(raise_exception=True)
+        return self._ok(servicios.abonar_encargo(self.negocio, request.user, self.get_object(), e.validated_data.get("pagos")))
+
+    @action(detail=True, methods=["post"])
+    def entregar(self, request, pk=None):
+        e = CobroEntrada(data=request.data)
+        e.is_valid(raise_exception=True)
+        d = e.validated_data
+        return self._ok(servicios.entregar_encargo(self.negocio, request.user, self.get_object(),
+                                                   d.get("pagos"), d.get("efectivo_recibido")))
+
+    @action(detail=True, methods=["post"])
+    def editar(self, request, pk=None):
+        e = EdicionEncargoEntrada(data=request.data)
+        e.is_valid(raise_exception=True)
+        d = e.validated_data
+        return self._ok(servicios.editar_encargo(self.negocio, request.user, self.get_object(), d.get("items"),
+                                                 d.get("fecha_entrega"), d.get("nota"), d.get("descuento"),
+                                                 self._cliente(d.get("cliente"))))
+
+    @action(detail=True, methods=["post"])
+    def cancelar(self, request, pk=None):
+        v = self.get_object()
+        devolver = request.data.get("devolver_abonos", True) not in (False, "false", 0, "0")
+        if request.user.rol != "ADMIN" and (v.total - v.saldo_pendiente) > 0:
+            raise PermissionDenied("Un encargo con abonos solo lo cancela el administrador.")
+        return self._ok(servicios.cancelar_encargo(self.negocio, request.user, v, devolver, request.data.get("motivo", "")))
+
+
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
@@ -359,7 +467,8 @@ def recibo_publico(request, token):
         "cliente": v.cliente.nombre if v.cliente else None,
         "detalles": DetalleSerializer(v.detalles.all(), many=True).data,
         "subtotal": v.subtotal, "descuento": v.descuento, "total": v.total,
-        "pagos": PagoSerializer(v.pagos.filter(es_abono=False), many=True).data,
+        "pagos": PagoSerializer(v.pagos.filter(es_abono=False) if v.origen != Venta.Origen.ENCARGO else v.pagos.all(), many=True).data,
+        "fecha_entrega": v.fecha_entrega, "es_encargo": v.origen == Venta.Origen.ENCARGO,
         "cambio": v.cambio, "saldo_pendiente": v.saldo_pendiente,
         "nota_legal": "Documento no fiscal. No reemplaza la factura electrónica.",
     })

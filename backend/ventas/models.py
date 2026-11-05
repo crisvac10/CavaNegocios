@@ -33,6 +33,7 @@ class Venta(TenantModel):
         PAGADA = "PAGADA", "Pagada"
         FIADO = "FIADO", "Fiado (saldo pendiente)"
         ANULADA = "ANULADA", "Anulada"
+        ENCARGO = "ENCARGO", "Encargo por entregar"
 
     numero = models.PositiveIntegerField()
     turno = models.PositiveIntegerField(null=True, blank=True, help_text="Número corto del día para llamar el pedido")
@@ -45,6 +46,7 @@ class Venta(TenantModel):
     class Origen(models.TextChoices):
         POS = "POS", "Venta"
         SALDO_ANTERIOR = "SALDO_ANTERIOR", "Deuda anterior"
+        ENCARGO = "ENCARGO", "Encargo"
 
     origen = models.CharField(max_length=14, choices=Origen.choices, default=Origen.POS,
                               help_text="SALDO_ANTERIOR: fiado de antes de usar la app; no cuenta como venta")
@@ -58,6 +60,10 @@ class Venta(TenantModel):
     cambio = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     nota = models.CharField(max_length=200, blank=True)
     mesa = models.CharField(max_length=12, blank=True, help_text='Número de mesa, "LLEVAR" o vacío')
+
+    # Encargos: se toman con fecha de entrega y abonos; cuentan como venta el día que se entregan
+    fecha_entrega = models.DateField(null=True, blank=True)
+    encargado_en = models.DateTimeField(null=True, blank=True, help_text="Cuándo se tomó el encargo")
 
     editada_en = models.DateTimeField(null=True, blank=True)
     editada_por = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
@@ -81,8 +87,11 @@ class Venta(TenantModel):
 
 class DetalleVenta(models.Model):
     venta = models.ForeignKey(Venta, on_delete=models.CASCADE, related_name="detalles")
-    producto = models.ForeignKey("catalogo.Producto", on_delete=models.PROTECT, related_name="detalles_venta")
+    producto = models.ForeignKey("catalogo.Producto", on_delete=models.PROTECT, related_name="detalles_venta",
+                                 null=True, blank=True, help_text="Vacío = algo personalizado (ej. ancheta con foto)")
     nombre = models.CharField(max_length=120)  # foto del nombre al vender
+    por_conseguir = models.DecimalField(max_digits=14, decimal_places=3, default=0,
+                                        help_text="Encargos: unidades que no había en stock; se descuentan al entregar")
     cantidad = models.DecimalField(max_digits=14, decimal_places=3)
     precio_unitario = models.DecimalField(max_digits=14, decimal_places=2)
     costo_unitario = models.DecimalField(max_digits=14, decimal_places=2)
