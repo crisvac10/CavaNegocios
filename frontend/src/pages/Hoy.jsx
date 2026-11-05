@@ -13,6 +13,7 @@ const ESTADO = {
   ABIERTA: ["Por cobrar", "bg-precio-claro text-texto"],
   FIADO: ["Fiado", "bg-precio-claro text-texto"],
   ANULADA: ["Eliminada", "bg-fondo text-suave"],
+  ENCARGO: ["Encargo pagado · por entregar", "bg-precio-claro text-texto"],
 };
 
 /** Una venta del día: una línea resumida que se despliega con todo lo que se vendió. */
@@ -21,7 +22,8 @@ function FilaVenta({ v, negocio, esAdmin, abierta, onAbrir, onEditar, onCobrar }
   const saldoAnterior = v.origen === "SALDO_ANTERIOR";
   const [etq, cls] = saldoAnterior ? ["Deuda anterior", "bg-fondo text-suave"] : ESTADO[v.estado] || [];
   const hora = new Date(v.creado).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" });
-  const puedeEditar = !anulada && !saldoAnterior && (esAdmin || v.estado === "ABIERTA");
+  // Un encargo pagado que aún no se entrega se maneja desde Encargos
+  const puedeEditar = !anulada && !saldoAnterior && v.estado !== "ENCARGO" && (esAdmin || v.estado === "ABIERTA");
   const pagos = v.pagos.filter((p) => !p.es_abono);
   const abonos = v.pagos.filter((p) => p.es_abono);
   const resumen = saldoAnterior ? v.nota : v.detalles.map((d) => `${numero(d.cantidad)} ${d.nombre}`).join(", ");

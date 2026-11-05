@@ -4,6 +4,7 @@ import { Check, MessageSquareText, Pencil, Undo2 } from "lucide-react";
 import { api } from "../lib/api";
 import { numero, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
+import { cobraDeUna } from "../lib/tipos";
 import Cobro from "../components/Cobro";
 import EditorVenta from "../components/EditorVenta";
 import { Aviso } from "../components/ui";
@@ -81,12 +82,70 @@ function Tarjeta({ p, ahora, onEntregar, onCobrar, onEditar, enviando }) {
   );
 }
 
+const hora = (iso) => new Date(iso).toLocaleTimeString("es-CO", { hour: "numeric", minute: "2-digit" });
+
+/** Tiendas: lo que se entregó hoy, cada pedido con todo lo que llevó. */
+function VendidosHoy({ lista = [], cargando }) {
+  if (cargando) return <p className="py-10 text-suave">Cargando…</p>;
+  if (!lista.length)
+    return (
+      <div className="mt-10 text-center">
+        <p className="font-display text-2xl font-bold text-tinta">Aún no se ha entregado nada hoy</p>
+        <p className="mt-1 text-suave">Cada venta y cada encargo que entregues aparece aquí con lo que llevó.</p>
+      </div>
+    );
+  const total = lista.reduce((s, p) => s + Number(p.total), 0);
+  return (
+    <>
+      <p className="mt-3 text-suave">
+        {lista.length} {lista.length === 1 ? "pedido entregado" : "pedidos entregados"} · <b className="text-texto num">{pesos(total)}</b>
+      </p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {lista.map((p) => {
+          const [etq, cls] = PAGO[p.estado_pago] || PAGO.PAGADA;
+          return (
+            <article key={p.id} className="rounded-2xl bg-papel p-4">
+              <header className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="font-display text-lg font-bold text-tinta">
+                    {p.origen === "ENCARGO" ? "Encargo" : "Venta"} #{p.numero}
+                  </p>
+                  <p className="text-sm text-suave">
+                    Entregado {hora(p.entregado_en)}{p.cliente ? ` · ${p.cliente}` : ""}
+                  </p>
+                </div>
+                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>{etq}</span>
+              </header>
+              <ul className="mt-3 space-y-1">
+                {p.items.map((it, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className="w-7 shrink-0 text-right font-bold text-tinta num">{numero(it.cantidad)}×</span>
+                    <span className="flex-1">{it.nombre}</span>
+                    <span className="text-suave num">{pesos(it.subtotal)}</span>
+                  </li>
+                ))}
+              </ul>
+              {p.nota && <p className="mt-2 rounded-lg bg-fondo px-3 py-1.5 text-sm">{p.nota}</p>}
+              <p className="mt-3 flex items-baseline justify-between border-t border-dashed border-linea pt-2">
+                <span className="text-sm text-suave">Total</span>
+                <span className="font-display text-lg font-extrabold text-tinta num">{pesos(p.total)}</span>
+              </p>
+            </article>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 export default function Pedidos() {
   const qc = useQueryClient();
   const { negocio } = useSesion();
   const [cobrando, setCobrando] = useState(null);
   const [editando, setEditando] = useState(null);
-  const [vista, setVista] = useState("pendientes");
+  // Tiendas: no hay cola, Pedidos muestra lo vendido y entregado en el día
+  const tienda = cobraDeUna(negocio);
+  const [vista, setVista] = useState(tienda ? "entregados" : "pendientes");
   const [ahora, setAhora] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setAhora(Date.now()), 30_000);
@@ -96,13 +155,14 @@ export default function Pedidos() {
   const pendientes = useQuery({
     queryKey: ["pedidos", "pendientes"],
     queryFn: () => api("/pedidos/"),
+    enabled: !tienda,
     refetchInterval: 5_000,
   });
   const entregados = useQuery({
     queryKey: ["pedidos", "entregados"],
     queryFn: () => api("/pedidos/", { query: { estado: "entregados" } }),
     enabled: vista === "entregados",
-    refetchInterval: 15_000,
+    refetchInterval: tienda ? 30_000 : 15_000,
   });
 
   const refrescar = () => qc.invalidateQueries({ queryKey: ["pedidos"] });
@@ -145,9 +205,9 @@ export default function Pedidos() {
         <h1 className="font-display text-3xl font-bold text-tinta">Pedidos</h1>
         <div className="flex rounded-lg bg-papel p-1 text-sm font-semibold" role="tablist">
           {[
-            ["pendientes", `Pendientes${lista.length ? ` (${lista.length})` : ""}`],
-            ["entregados", "Entregados hoy"],
-          ].map(([v, t]) => (
+            !tienda && ["pendientes", `Pendientes${lista.length ? ` (${lista.length})` : ""}`],
+            ["entregados", tienda ? `Entregados hoy${entregados.data?.length ? ` (${entregados.data.length})` : ""}` : "Entregados hoy"],
+          ].filter(Boolean).map(([v, t]) => (
             <button
               key={v}
               role="tab"
@@ -180,6 +240,9 @@ export default function Pedidos() {
           </div>
         )
       ) : (
+        tienda ? (
+          <VendidosHoy lista={entregados.data} cargando={entregados.isLoading} />
+        ) : (
         <ul className="mt-5 max-w-2xl divide-y divide-linea rounded-xl bg-papel">
           {(entregados.data || []).length === 0 && <li className="p-4 text-suave">Aún no se ha entregado nada hoy.</li>}
           {(entregados.data || []).map((p) => (
@@ -200,6 +263,7 @@ export default function Pedidos() {
             </li>
           ))}
         </ul>
+        )
       )}
       {cobrando && (
         <Cobro

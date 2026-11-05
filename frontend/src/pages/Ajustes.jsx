@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { cobraDeUna } from "../lib/tipos";
 import { useMutation } from "@tanstack/react-query";
 import { Check, ImagePlus, Store } from "lucide-react";
 import { api } from "../lib/api";
@@ -253,20 +254,20 @@ export default function Ajustes() {
 
         <Seccion titulo="Cómo trabaja el negocio">
           <div className="space-y-2">
-            <label className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-linea bg-papel p-4">
+            {!cobraDeUna(negocio) && <label className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-linea bg-papel p-4">
               <span>
                 <span className="block font-semibold">Mesas del local</span>
                 <span className="block text-sm text-suave">Al registrar un pedido eliges la mesa o "Para llevar". En 0, solo aparece "Para llevar".</span>
               </span>
               <input type="number" min={0} max={99} value={f.num_mesas} onChange={(e) => setF((x) => ({ ...x, num_mesas: Math.max(0, Math.min(99, Number(e.target.value) || 0)) }))}
                 className="w-20 rounded-lg border border-linea px-3 py-2 text-center outline-none focus:border-tinta" aria-label="Número de mesas" />
-            </label>
+            </label>}
             {[
-              ["usa_cola_pedidos", "Cola de pedidos", "Cada venta entra a Pedidos con su turno hasta marcarla entregada."],
+              !cobraDeUna(negocio) && ["usa_cola_pedidos", "Cola de pedidos", "Cada venta entra a Pedidos con su turno hasta marcarla entregada."],
               ["permitir_fiado", "Fiar a clientes", "Permite vender a crédito a clientes registrados."],
               ["usa_caja", "Caja registradora", "Abrir la caja con una base y cerrarla contando el efectivo. Apagado: se cuadra por día."],
               ["bloquear_sin_stock", "No vender sin inventario", "Impide vender un producto cuando su inventario llega a cero."],
-            ].map(([k, t, d]) => (
+            ].filter(Boolean).map(([k, t, d]) => (
               <label key={k} className="flex cursor-pointer items-start gap-3 rounded-xl border border-linea bg-papel p-4">
                 <input type="checkbox" checked={f[k]} onChange={set(k)} className="mt-0.5 h-5 w-5 shrink-0 accent-tinta" />
                 <span>

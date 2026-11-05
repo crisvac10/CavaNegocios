@@ -441,7 +441,15 @@ def crear_encargo(negocio, usuario, items, cliente, fecha_entrega, pagos=None, d
     )
     _guardar_detalles(venta, lineas, usuario, False, f"Encargo #{venta.numero}", encargo=True)
     _abonar(venta, pagos_limpios, usuario, sesion)
-    return venta
+    return venta  # si lo pagaron completo, ya cuenta como venta de hoy (se creó hoy)
+
+
+def _marcar_pagado(venta):
+    """Al quedar pagado completo, el encargo pasa a contar como venta del día en que se terminó de pagar."""
+    if venta.estado == Venta.Estado.ENCARGO and venta.saldo_pendiente <= 0:
+        ahora = timezone.now()
+        Venta.objects.filter(pk=venta.pk).update(creado=ahora)
+        venta.creado = ahora
 
 
 @transaction.atomic
@@ -456,6 +464,7 @@ def abonar_encargo(negocio, usuario, venta, pagos):
     _abonar(venta, pagos_limpios, usuario, sesion)
     venta.saldo_pendiente -= monto
     venta.save(update_fields=["saldo_pendiente", "actualizado"])
+    _marcar_pagado(venta)
     return venta
 
 
@@ -484,8 +493,11 @@ def editar_encargo(negocio, usuario, venta, items=None, fecha_entrega=None, nota
         venta.nota = nota[:200]
     if cliente is not None:
         venta.cliente = cliente
+    pagado_antes = Venta.objects.filter(pk=venta.pk, saldo_pendiente__lte=0).exists()
     venta.editada_en, venta.editada_por = timezone.now(), usuario
     venta.save()
+    if not pagado_antes:  # quitaron cosas y lo abonado ya cubre todo
+        _marcar_pagado(venta)
     return venta
 
 
@@ -493,7 +505,8 @@ def editar_encargo(negocio, usuario, venta, items=None, fecha_entrega=None, nota
 def entregar_encargo(negocio, usuario, venta, pagos=None, efectivo_recibido=None):
     """Entrega el encargo: cobra lo que falte (o lo deja fiado al cliente) y desde hoy cuenta como venta."""
     venta = _encargo(negocio, venta)
-    sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
+    ya_pagado = venta.saldo_pendiente <= 0  # ya contó como venta el día que lo terminaron de pagar
+    sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja and not ya_pagado)
     pagos_limpios, pagado = _pagos(negocio, pagos)
     if pagado > venta.saldo_pendiente:
         raise ValidationError(f"Solo faltan {pesos(venta.saldo_pendiente)}. El cambio se calcula con el efectivo recibido.")
@@ -511,10 +524,13 @@ def entregar_encargo(negocio, usuario, venta, pagos=None, efectivo_recibido=None
     venta.efectivo_recibido, venta.cambio = _cambio(pagos_limpios, efectivo_recibido)
     venta.saldo_pendiente = saldo
     venta.estado = Venta.Estado.FIADO if saldo > 0 else Venta.Estado.PAGADA
-    venta.entregado_en, venta.entregado_por, venta.sesion_caja = ahora, usuario, sesion
+    venta.entregado_en, venta.entregado_por = ahora, usuario
+    if not ya_pagado:
+        venta.sesion_caja = sesion
     venta.save()
-    Venta.objects.filter(pk=venta.pk).update(creado=ahora)  # cuenta como venta del día de entrega
-    venta.creado = ahora
+    if not ya_pagado:
+        Venta.objects.filter(pk=venta.pk).update(creado=ahora)  # con saldo: cuenta como venta del día de entrega
+        venta.creado = ahora
     return venta
 
 

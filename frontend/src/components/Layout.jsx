@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   BarChart3, Boxes, CalendarCheck, ChefHat, Gift, HandCoins, Landmark, LogOut, Menu, Receipt, Settings, ShoppingBasket, X,
 } from "lucide-react";
+import { cobraDeUna } from "../lib/tipos";
 import { api } from "../lib/api";
 import { useSesion } from "../context/Sesion";
 
@@ -80,7 +81,7 @@ export default function Layout() {
   const { data: lista = [] } = useQuery({
     queryKey: ["pedidos", "pendientes"],
     queryFn: () => api("/pedidos/"),
-    enabled: Boolean(usaCola),
+    enabled: Boolean(usaCola) && !cobraDeUna(negocio),
     refetchInterval: 15_000,
   });
   const pendientes = lista.length;

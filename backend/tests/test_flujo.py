@@ -1,4 +1,6 @@
 import datetime as dt
+
+from django.utils import timezone
 from decimal import Decimal
 
 from django.test import TestCase
@@ -10,6 +12,7 @@ from creditos.models import Credito, TasaUsura
 from negocios.models import Negocio
 from negocios.utils import hoy
 from usuarios.models import Usuario
+from ventas.models import Venta
 
 
 class Base(TestCase):
@@ -425,9 +428,9 @@ class FotosMenuPedidos(Base):
         self.assertEqual(len(self.ok(self.c.get("/api/pedidos/?estado=entregados"))), 2)
         self.ok(self.c.post(f"/api/pedidos/{v1['id']}/deshacer/"))
         self.assertEqual(len(self.ok(self.c.get("/api/pedidos/"))), 1)
-        # Otro negocio no ve ni toca la cola (y una tienda ni siquiera tiene cola: cobra directo)
+        # Otro negocio no ve ni toca la cola (una tienda tiene Pedidos solo para ver lo entregado en el día)
         self.login("luis")
-        self.assertEqual(self.c.get("/api/pedidos/").status_code, 403)
+        self.assertEqual(self.ok(self.c.get("/api/pedidos/?estado=entregados")), [])
         self.otro.modulos = ["pos", "pedidos"]
         self.otro.save()
         self.assertEqual(self.ok(self.c.get("/api/pedidos/")), [])
@@ -818,10 +821,11 @@ class EncargosTiendaRegalos(Base):
     def test_forma_de_vender_segun_tipo(self):
         mods = self.ok(self.c.get("/api/mi-negocio/"))["modulos_activos"]
         self.assertIn("encargos", mods)
-        self.assertNotIn("pedidos", mods)
+        self.assertIn("pedidos", mods)  # ve lo entregado en el día, pero sin cola
+        self.reg.refresh_from_db(); self.assertFalse(self.reg.usa_cola)
         self.assertNotIn("encargos", self.neg.modulos_activos)  # la cafetería no tiene encargos
         self.assertIn("pedidos", self.neg.modulos_activos)
-        self.assertNotIn("pedidos", self.otro.modulos_activos)  # la tienda cobra directo
+        self.assertFalse(self.otro.usa_cola)  # la tienda cobra directo
         # Una cafetería no puede tomar encargos
         self.login("dueno")
         r = self.c.post("/api/encargos/", {}, format="json")
@@ -887,3 +891,32 @@ class EncargosTiendaRegalos(Base):
         self.assertEqual((v["estado"], v["total"]), ("PAGADA", 25000))
         self.assertIsNotNone(v["entregado_en"])  # sin cola: se entrega de una
         self.assertEqual(self.ok(self.c.get("/api/reportes/resumen/"))["ventas_netas"], 25000)
+
+    def test_encargo_pagado_completo_es_venta_de_hoy(self):
+        # Pagado completo al crearlo: ya es venta de hoy aunque se entregue en 3 días
+        e = self.ok(self.encargo(pagos=[{"medio": "NEQUI", "monto": 100000}]), 201)
+        r = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual((r["ventas_netas"], r["encargos_por_entregar"]["cantidad"]), (100000, 1))
+        hoy_ids = [v["id"] for v in self.ok(self.c.get("/api/ventas/", {"desde": str(hoy()), "hasta": str(hoy())}))]
+        self.assertIn(e["id"], hoy_ids)
+        # Sigue en Encargos hasta entregarlo, y al entregarlo no se cuenta dos veces
+        self.assertEqual(self.ok(self.c.get("/api/encargos/"))[0]["id"], e["id"])
+        self.stock(self.peluche, 1)
+        v = self.ok(self.c.post(f"/api/encargos/{e['id']}/entregar/", {}, format="json"))
+        self.assertEqual(v["estado"], "PAGADA")
+        self.assertEqual(self.ok(self.c.get("/api/reportes/resumen/"))["ventas_netas"], 100000)
+        # Y aparece en Pedidos -> entregados de hoy
+        self.assertEqual(self.ok(self.c.get("/api/pedidos/", {"estado": "entregados"}))[0]["id"], e["id"])
+
+    def test_encargo_que_se_termina_de_pagar_con_abonos(self):
+        e = self.ok(self.encargo(), 201)
+        hace_dos = timezone.now() - dt.timedelta(days=2)
+        Venta.objects.filter(pk=e["id"]).update(creado=hace_dos)  # se tomó hace dos días
+        self.assertEqual(self.ok(self.c.get("/api/reportes/resumen/"))["ventas_netas"], 0)
+        self.ok(self.c.post(f"/api/encargos/{e['id']}/abonar/", {"pagos": [{"medio": "EFECTIVO", "monto": 70000}]}, format="json"))
+        # Con el último abono cuenta como venta de hoy (el día en que quedó pagado)
+        self.assertEqual(self.ok(self.c.get("/api/reportes/resumen/"))["ventas_netas"], 100000)
+        # Si le agregan algo, vuelve a tener saldo y deja de contar hasta pagarlo
+        self.ok(self.c.post(f"/api/encargos/{e['id']}/editar/", {"items": [
+            {"producto": self.peluche.id, "cantidad": 2}, {"nombre": "Ancheta con foto", "precio": 60000}, {"nombre": "Tarjeta", "precio": 5000}]}, format="json"))
+        self.assertEqual(self.ok(self.c.get("/api/reportes/resumen/"))["ventas_netas"], 0)

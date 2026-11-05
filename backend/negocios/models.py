@@ -21,13 +21,13 @@ MODULOS_BASE = [m.value for m in Modulo]
 
 # Cada tipo de negocio vende a su manera (módulos que trae si el superadmin no los elige a mano):
 # - Cafetería / restaurante: se registra el pedido, pasa por la cola (mesas, para llevar) y se cobra.
-# - Tienda: se cobra de una vez, sin cola.
-# - Tienda de regalos: cobra de una vez y además toma encargos para una fecha, con abonos.
+# - Tienda: se cobra de una vez; en Pedidos ve lo vendido en el día.
+# - Tienda de regalos: igual, y además toma encargos para una fecha, con abonos.
 _SIN = {
     "CAFETERIA": {Modulo.ENCARGOS},
     "RESTAURANTE": {Modulo.ENCARGOS},
-    "TIENDA": {Modulo.ENCARGOS, Modulo.PEDIDOS},
-    "REGALOS": {Modulo.PEDIDOS},
+    "TIENDA": {Modulo.ENCARGOS},
+    "REGALOS": set(),
     "OTRO": {Modulo.ENCARGOS},
 }
 MODULOS_POR_TIPO = {t: [m for m in MODULOS_BASE if m not in sin] for t, sin in _SIN.items()}
@@ -107,6 +107,8 @@ class Negocio(models.Model):
     @property
     def usa_cola(self):
         """Los pedidos pasan por la cola de cocina hasta entregarse (cafeterías y restaurantes)."""
+        if self.tipo in (self.Tipo.TIENDA, self.Tipo.REGALOS):
+            return False  # cobran de una vez y entregan en el momento; Pedidos solo muestra lo del día
         return self.usa_cola_pedidos and self.tiene_modulo(Modulo.PEDIDOS)
 
     def tiene_modulo(self, modulo):

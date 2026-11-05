@@ -209,7 +209,8 @@ class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
         if p.get("estado"):
             qs = qs.filter(estado=p["estado"])
         elif self.action == "list":
-            qs = qs.exclude(estado=Venta.Estado.ENCARGO)  # los encargos sin entregar viven en /encargos/
+            # Los encargos con saldo viven en /encargos/; ya pagados completos cuentan como venta de ese día
+            qs = qs.exclude(estado=Venta.Estado.ENCARGO, saldo_pendiente__gt=0)
         if p.get("sesion"):
             qs = qs.filter(sesion_caja_id=p["sesion"])
         if p.get("numero"):
@@ -334,7 +335,7 @@ class PedidoViewSet(TenantMixin, viewsets.GenericViewSet):
             "id": v.id, "turno": v.turno, "numero": v.numero, "mesa": v.mesa, "creado": v.creado, "entregado_en": v.entregado_en,
             "cliente": v.cliente.nombre if v.cliente else None, "cliente_id": v.cliente_id, "nota": v.nota,
             "subtotal": v.subtotal, "descuento": v.descuento, "total": v.total, "saldo_pendiente": v.saldo_pendiente,
-            "estado_pago": v.estado,
+            "estado_pago": v.estado, "origen": v.origen,
             "items": [{"producto": d.producto_id, "nombre": d.nombre, "cantidad": d.cantidad,
                        "precio_unitario": d.precio_unitario, "subtotal": d.subtotal} for d in v.detalles.all()],
         }

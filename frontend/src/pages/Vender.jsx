@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { CalendarDays, CheckCircle2, Gift, Minus, PenLine, Plus, Search, Share2, ShoppingBasket, Trash2 } from "lucide-react";
+import { cobraDeUna } from "../lib/tipos";
 import { api } from "../lib/api";
 import { MEDIOS, fechaCorta, hoyISO, numero, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
@@ -421,7 +422,7 @@ export default function Vender() {
   // - Tienda / tienda de regalos: se cobra de una vez. La de regalos además toma encargos.
   // Una venta de un día anterior siempre se cobra de una, porque ese día ya pasó.
   const usaCola = tieneModulo("pedidos") && negocio?.usa_cola_pedidos;
-  const registrarPrimero = !fecha && tieneModulo("pedidos");
+  const registrarPrimero = !fecha && tieneModulo("pedidos") && !cobraDeUna(negocio);
   const conEncargos = tieneModulo("encargos") && !fecha;
   const enEncargo = conEncargos && modo === "encargo";
   const [otroDia, setOtroDia] = useState(false);

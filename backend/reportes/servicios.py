@@ -26,7 +26,9 @@ def ventas_validas(negocio, desde, hasta):
     from ventas.models import Venta
     ini, fin = rango_fechas(desde, hasta)
     return (Venta.objects.filter(negocio=negocio, creado__gte=ini, creado__lt=fin)
-            .exclude(estado__in=[Venta.Estado.ANULADA, Venta.Estado.ENCARGO])  # un encargo cuenta al entregarse
+            .exclude(estado=Venta.Estado.ANULADA)
+            # Un encargo cuenta como venta cuando se paga completo o, si no, al entregarse
+            .exclude(estado=Venta.Estado.ENCARGO, saldo_pendiente__gt=0)
             .exclude(origen=Venta.Origen.SALDO_ANTERIOR))
 
 
