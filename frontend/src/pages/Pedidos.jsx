@@ -16,6 +16,45 @@ const PAGO = {
 };
 const donde = (mesa) => (mesa === "LLEVAR" ? "Para llevar" : mesa ? `Mesa ${mesa}` : null);
 
+/**
+ * Una cuenta dividida queda en varias ventas con el mismo turno: en la cola se ven como un solo pedido.
+ * Cobrar/Editar actúan sobre la parte que sigue por cobrar.
+ */
+function agrupar(lista = []) {
+  const grupos = [];
+  const porTurno = new Map();
+  for (const v of lista) {
+    const g = v.turno ? porTurno.get(v.turno) : null;
+    if (!g) {
+      const nuevo = { ...v, partes: [v] };
+      grupos.push(nuevo);
+      if (v.turno) porTurno.set(v.turno, nuevo);
+      continue;
+    }
+    g.partes.push(v);
+  }
+  return grupos.map((g) => {
+    if (g.partes.length === 1) return g;
+    const abierta = g.partes.find((v) => v.estado_pago === "ABIERTA");
+    const base = abierta || g.partes[0];
+    return {
+      ...base,
+      creado: g.partes.reduce((m, v) => (v.creado < m ? v.creado : m), g.creado),
+      entregado_en: g.partes.every((v) => v.entregado_en) ? base.entregado_en : null,
+      // Lo mismo repartido entre varias personas se ve junto (ej. 2× Agua, no 1× Agua dos veces)
+      items: Object.values(g.partes.flatMap((v) => v.items).reduce((acc, it) => {
+        const k = `${it.producto ?? it.nombre}|${it.precio_unitario}`;
+        acc[k] = acc[k] ? { ...acc[k], cantidad: Number(acc[k].cantidad) + Number(it.cantidad) } : { ...it };
+        return acc;
+      }, {})),
+      total: g.partes.reduce((s, v) => s + Number(v.total), 0),
+      estado_pago: abierta ? "ABIERTA" : g.partes.some((v) => v.estado_pago === "FIADO") ? "FIADO" : "PAGADA",
+      partes: g.partes,
+      abierta,
+    };
+  });
+}
+
 const ESPERA_LARGA = 10; // minutos: a partir de aquí el pedido se marca en rojo
 
 const minutosDesde = (iso, ahora) => Math.max(0, Math.floor((ahora - new Date(iso).getTime()) / 60000));
@@ -39,6 +78,11 @@ function Tarjeta({ p, ahora, onEntregar, onCobrar, onEditar, enviando }) {
           <p className={`font-semibold num ${tarde ? "text-alerta" : "text-suave"}`}>{entregado ? "Entregado" : textoEspera(min)}</p>
           {p.cliente && <p className="mt-0.5 text-sm font-medium">{p.cliente}</p>}
           <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>{etq}</span>
+          {p.partes?.length > 1 && (
+            <p className="mt-1 text-xs text-suave">
+              Cuenta dividida · {p.partes.filter((v) => v.estado_pago !== "ABIERTA").length} de {p.partes.length} cobradas
+            </p>
+          )}
         </div>
       </header>
       <ul className="flex-1 space-y-1.5 px-4 py-4">
@@ -59,12 +103,18 @@ function Tarjeta({ p, ahora, onEntregar, onCobrar, onEditar, enviando }) {
         <span className="text-sm text-suave">Total</span>
         <span className="font-display text-xl font-extrabold text-tinta num">{pesos(p.total)}</span>
       </p>
+      {p.partes?.length > 1 && p.abierta && (
+        <p className="-mt-1 flex justify-between px-4 pb-2.5 text-sm font-semibold">
+          <span>Falta por cobrar</span>
+          <span className="num">{pesos(p.abierta.total)}</span>
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-b-2xl bg-linea">
-        <button onClick={() => onEditar(p)} className={`flex items-center justify-center gap-1.5 bg-papel py-3.5 font-semibold text-tinta hover:bg-fondo ${porCobrar ? "" : "col-span-2"}`}>
+        <button onClick={() => onEditar(p.abierta || p.partes?.[0] || p)} className={`flex items-center justify-center gap-1.5 bg-papel py-3.5 font-semibold text-tinta hover:bg-fondo ${porCobrar ? "" : "col-span-2"}`}>
           <Pencil size={17} aria-hidden /> Editar
         </button>
         {porCobrar && (
-          <button onClick={() => onCobrar(p)} className="bg-tinta py-3.5 font-semibold text-white hover:bg-tinta-2">
+          <button onClick={() => onCobrar(p.abierta || p)} className="bg-tinta py-3.5 font-semibold text-white hover:bg-tinta-2">
             Cobrar
           </button>
         )}
@@ -184,8 +234,9 @@ export default function Pedidos() {
       await qc.cancelQueries({ queryKey: ["pedidos", "pendientes"] });
       const antes = qc.getQueryData(["pedidos", "pendientes"]);
       // Si falta cobrarlo se queda en la cola como "entregado, por cobrar"
+      const ids = new Set((p.partes || [p]).map((x) => x.id));
       qc.setQueryData(["pedidos", "pendientes"], (lista = []) =>
-        lista.flatMap((x) => (x.id !== p.id ? [x] : x.estado_pago === "ABIERTA" ? [{ ...x, entregado_en: new Date().toISOString() }] : [])));
+        lista.flatMap((x) => (!ids.has(x.id) ? [x] : x.estado_pago === "ABIERTA" ? [{ ...x, entregado_en: new Date().toISOString() }] : [])));
       return { antes };
     },
     onError: (_e, _p, ctx) => qc.setQueryData(["pedidos", "pendientes"], ctx.antes),
@@ -196,7 +247,7 @@ export default function Pedidos() {
     onSettled: refrescar,
   });
 
-  const lista = pendientes.data || [];
+  const lista = agrupar(pendientes.data);
   const error = pendientes.error || entregar.error || deshacer.error || errorEditar;
 
   return (
@@ -245,7 +296,7 @@ export default function Pedidos() {
         ) : (
         <ul className="mt-5 max-w-2xl divide-y divide-linea rounded-xl bg-papel">
           {(entregados.data || []).length === 0 && <li className="p-4 text-suave">Aún no se ha entregado nada hoy.</li>}
-          {(entregados.data || []).map((p) => (
+          {agrupar(entregados.data).map((p) => (
             <li key={p.id} className="flex items-center gap-4 px-4 py-3">
               <span className="w-12 font-display text-2xl font-extrabold text-tinta num">{p.turno}</span>
               <div className="min-w-0 flex-1">
@@ -272,6 +323,7 @@ export default function Pedidos() {
           detalle={cobrando.items}
           titulo={`Cobrar turno ${cobrando.turno}${donde(cobrando.mesa) ? ` · ${donde(cobrando.mesa)}` : ""}`}
           negocio={negocio}
+          onParte={() => { refrescar(); qc.invalidateQueries({ queryKey: ["caja"] }); }}
           onListo={() => { setCobrando(null); refrescar(); qc.invalidateQueries({ queryKey: ["caja"] }); }}
           onCerrar={() => setCobrando(null)}
         />

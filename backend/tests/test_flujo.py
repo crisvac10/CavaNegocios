@@ -632,6 +632,47 @@ class PedidosPorCobrarYEdicion(Base):
         datos.update(extra)
         return self.ok(self.c.post("/api/ventas/", datos, format="json"), 201)
 
+    def test_dividir_la_cuenta_por_lo_que_pidio_cada_uno(self):
+        # Piden 3 tintos (2.000) y 2 panes (3.000) con 1.000 de descuento: total 11.000
+        self.login("dueno"); self.stock(self.cafe, 10); self.stock(self.pan, 10)
+        p = self.venta(registrar=True, mesa="", descuento=1000,
+                       items=[{"producto": self.cafe.id, "cantidad": 3}, {"producto": self.pan.id, "cantidad": 2}])
+        self.assertEqual(p["total"], 11000)
+        cafe, pan = [d["id"] for d in p["detalles"]]
+        # Ana paga 1 tinto y 1 pan por Nequi (5.000 menos su parte del descuento: 417 -> 4.583)
+        r = self.ok(self.c.post(f"/api/ventas/{p['id']}/cobrar/", {
+            "partes": [{"detalle": cafe, "cantidad": 1}, {"detalle": pan, "cantidad": 1}],
+            "pagos": [{"medio": "NEQUI", "monto": 4583}]}, format="json"))
+        self.assertEqual((r["estado"], r["total"], r["turno"]), ("PAGADA", 4583, p["turno"]))
+        self.assertNotEqual(r["numero"], p["numero"])
+        resto = r["resto"]
+        self.assertEqual((resto["id"], resto["estado"], resto["total"]), (p["id"], "ABIERTA", 6417))
+        self.assertEqual([float(d["cantidad"]) for d in resto["detalles"]], [2.0, 1.0])
+        # No se puede cobrar más de lo que hay ni algo de otro pedido
+        self.assertEqual(self.c.post(f"/api/ventas/{p['id']}/cobrar/", {
+            "partes": [{"detalle": cafe, "cantidad": 5}], "pagos": []}, format="json").status_code, 400)
+        # Luis paga 1 café en efectivo; el último café y pan quedan para Sofía, que los fía
+        r2 = self.ok(self.c.post(f"/api/ventas/{p['id']}/cobrar/", {
+            "partes": [{"detalle": cafe, "cantidad": 1}], "pagos": [{"medio": "EFECTIVO", "monto": 1833}]}, format="json"))
+        self.assertEqual(r2["total"], 1833)
+        cli = self.ok(self.c.post("/api/clientes/", {"nombre": "Sofía"}, format="json"), 201)
+        r3 = self.ok(self.c.post(f"/api/ventas/{p['id']}/cobrar/", {
+            "partes": [{"detalle": cafe, "cantidad": 1}, {"detalle": pan, "cantidad": 1}], "cliente": cli["id"]}, format="json"))
+        self.assertEqual((r3["id"], r3["estado"], r3["total"], r3["resto"]), (p["id"], "FIADO", 4584, None))
+        # En la cola siguen siendo el turno de la mesa: al entregar uno se entregan todas las partes
+        self.neg.usa_cola_pedidos = True; self.neg.save()
+        self.assertEqual(len(self.ok(self.c.get("/api/pedidos/"))), 3)
+        self.ok(self.c.post(f"/api/pedidos/{p['id']}/entregar/"))
+        self.assertEqual(self.ok(self.c.get("/api/pedidos/")), [])
+        self.ok(self.c.post(f"/api/pedidos/{r['id']}/deshacer/"))
+        self.assertEqual(len(self.ok(self.c.get("/api/pedidos/"))), 3)
+        # Entre las tres partes suman lo mismo y el inventario no se movió al dividir
+        self.assertEqual(4583 + 1833 + 4584, 11000)
+        rep = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual(rep["ventas_netas"], 11000)
+        self.cafe.refresh_from_db(); self.pan.refresh_from_db()
+        self.assertEqual((self.cafe.stock, self.pan.stock), (7, 8))
+
     def test_registrar_varios_pedidos_y_cobrar_despues(self):
         self.login("cajero")
         p1 = self.venta(registrar=True, nota="mesa 1")

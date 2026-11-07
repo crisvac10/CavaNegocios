@@ -274,6 +274,7 @@ export default function Hoy() {
       {cobrando && (
         <Cobro ventaId={cobrando.id} total={Number(cobrando.total)} detalle={cobrando.detalles} negocio={negocio}
           titulo={`Cobrar #${cobrando.numero}`}
+          onParte={() => ["ventas", "caja", "pedidos"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }))}
           onListo={() => { setCobrando(null); ["ventas", "caja", "pedidos"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })); }}
           onCerrar={() => setCobrando(null)} />
       )}

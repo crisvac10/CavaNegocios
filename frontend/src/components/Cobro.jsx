@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, HandCoins, Search, UserPlus } from "lucide-react";
+import { Check, CheckCircle2, HandCoins, Minus, Plus, Search, Split, UserPlus } from "lucide-react";
 import { api } from "../lib/api";
 import { MEDIOS, numero, pesos } from "../lib/formato";
 import { Aviso, Boton, Hoja, InputPesos } from "./ui";
@@ -104,12 +104,59 @@ export function SelectorCliente({ cliente, onElegir }) {
   );
 }
 
+/** Dividir la cuenta: qué productos (y cuántos) paga esta persona. */
+function ElegirParte({ lineas, partes, onCambiar }) {
+  const poner = (d, q) => onCambiar({ ...partes, [d.id]: Math.max(0, Math.min(Number(d.cantidad), q)) });
+  return (
+    <ul className="divide-y divide-linea">
+      {lineas.map((d) => {
+        const q = partes[d.id] || 0;
+        const max = Number(d.cantidad);
+        return (
+          <li key={d.id} className="flex items-center gap-3 py-2">
+            <button onClick={() => poner(d, q === max ? 0 : max)} className="min-w-0 flex-1 text-left">
+              <span className={`block truncate font-medium ${q ? "text-tinta" : ""}`}>{d.nombre}</span>
+              <span className="text-xs text-suave num">{numero(max)} en la cuenta · {pesos(d.precio_unitario)} c/u</span>
+            </button>
+            <div className="flex items-center rounded-lg border border-linea bg-papel">
+              <button onClick={() => poner(d, q - 1)} disabled={!q} className="p-2 text-tinta disabled:opacity-30" aria-label={`Quitar un ${d.nombre}`}>
+                <Minus size={16} />
+              </button>
+              <span className={`w-8 text-center font-bold num ${q ? "text-tinta" : "text-suave"}`}>{numero(q)}</span>
+              <button onClick={() => poner(d, q + 1)} disabled={q >= max} className="p-2 text-tinta disabled:opacity-30" aria-label={`Agregar un ${d.nombre}`}>
+                <Plus size={16} />
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export default function Cobro({
-  total, items, descuento, negocio, extra = {}, onListo, onCerrar, ventaId, detalle, titulo, clienteInicial,
+  total: totalInicial, items, descuento, negocio, extra = {}, onListo, onCerrar, ventaId, detalle, titulo, clienteInicial,
   url, // otra ruta de cobro (ej. entregar un encargo): recibe {pagos, efectivo_recibido}
   textoBoton, etiquetaTotal = "Total",
+  onParte, // dividir la cuenta: avisa cada vez que se cobra una parte (para refrescar listas)
+  onDividir, // venta nueva desde el carrito: la registra como pedido y vuelve a abrir el cobro dividido
+  dividirAlAbrir = false,
 }) {
   const medios = negocio.medios_pago_activos;
+  // Lo que sigue por cobrar del pedido (cambia al cobrar cada parte)
+  const [lineas, setLineas] = useState(detalle || []);
+  const [totalPedido, setTotalPedido] = useState(totalInicial);
+  const dividible = Boolean(ventaId && !url && lineas.length && lineas.every((d) => d.id) &&
+    (lineas.length > 1 || Number(lineas[0].cantidad) > 1));
+  const [partes, setPartes] = useState(dividirAlAbrir ? {} : null); // null = se cobra todo junto
+  const [cobradas, setCobradas] = useState([]);
+
+  const subPedido = lineas.reduce((s, d) => s + Number(d.subtotal), 0);
+  const descPedido = Math.max(0, subPedido - totalPedido);
+  const subParte = partes ? lineas.reduce((s, d) => s + (partes[d.id] || 0) * Number(d.precio_unitario), 0) : 0;
+  const todo = partes && lineas.every((d) => (partes[d.id] || 0) === Number(d.cantidad));
+  // El descuento se reparte igual que en el servidor: en proporción a lo que se lleva cada uno
+  const total = !partes || todo ? totalPedido : subParte - (subPedido ? Math.round((descPedido * subParte) / subPedido) : 0);
   const [modo, setModo] = useState("pago"); // pago | fiar
   const [medio, setMedio] = useState(medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0]);
   const [recibido, setRecibido] = useState(0);
@@ -130,6 +177,7 @@ export default function Cobro({
   const falta = total - pagado;
 
   const problema =
+    partes && subParte === 0 ? "Toca lo que paga esta persona." :
     modo === "fiar"
       ? !cliente ? "Elige a quién le fías." : abono > total ? "El abono no puede ser mayor al total." : null
       : dividir && falta !== 0 ? (falta > 0 ? `Faltan ${pesos(falta)} por repartir.` : `Te pasaste ${pesos(-falta)}.`) : null;
@@ -141,6 +189,7 @@ export default function Cobro({
           method: "POST",
           body: {
             pagos,
+            ...(partes && !todo ? { partes: Object.entries(partes).filter(([, q]) => q > 0).map(([d, q]) => ({ detalle: Number(d), cantidad: q })) } : {}),
             cliente: modo === "fiar" ? cliente.id : null,
             efectivo_recibido: efectivo > 0 && recibido > 0 ? recibido : null,
           },
@@ -156,15 +205,56 @@ export default function Cobro({
           ...extra,
         },
       }),
-    onSuccess: onListo,
+    onSuccess: (r) => {
+      if (!r?.resto) return onListo(r);
+      // Se cobró una parte: queda abierto con lo que falta para la siguiente persona
+      setCobradas((c) => [...c, { numero: r.numero, total: Number(r.total), estado: r.estado }]);
+      setLineas(r.resto.detalles);
+      setTotalPedido(Number(r.resto.total));
+      setPartes({});
+      setModo("pago"); setMedio(medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0]); setRecibido(0); setMontos({}); setDividir(false); setAbono(0); setCliente(clienteInicial || null);
+      onParte?.(r);
+    },
   });
 
   return (
     <Hoja titulo={titulo || `Cobrar ${pesos(total)}`} onCerrar={onCerrar}>
-      {detalle?.length > 0 && (
+      {cobradas.length > 0 && (
+        <ul className="mb-4 space-y-1 rounded-xl bg-ok-claro p-3 text-sm">
+          {cobradas.map((c, i) => (
+            <li key={c.numero} className="flex items-center gap-2 text-ok">
+              <CheckCircle2 size={17} aria-hidden />
+              <span className="flex-1 font-semibold">Persona {i + 1} · venta #{c.numero}{c.estado === "FIADO" ? " (fiada)" : ""}</span>
+              <span className="font-semibold num">{pesos(c.total)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {partes && (
+        <div className="mb-5 rounded-xl bg-fondo p-4">
+          <div className="mb-1 flex items-baseline justify-between gap-2">
+            <p className="font-semibold">¿Qué paga la persona {cobradas.length + 1}?</p>
+            {!cobradas.length && (
+              <button onClick={() => setPartes(null)} className="text-sm font-semibold text-tinta underline">No dividir</button>
+            )}
+          </div>
+          <ElegirParte lineas={lineas} partes={partes} onCambiar={setPartes} />
+          <div className="mt-3 space-y-1 border-t border-dashed border-linea pt-2">
+            <p className="flex items-baseline justify-between">
+              <span className="font-semibold">Paga</span>
+              <span className="font-display text-2xl font-extrabold text-tinta num">{pesos(subParte ? total : 0)}</span>
+            </p>
+            <p className="flex justify-between text-sm text-suave">
+              <span>{todo ? "Con esto queda todo pagado" : "Queda por cobrar"}</span>
+              <span className="num">{pesos(todo ? 0 : totalPedido - (subParte ? total : 0))}</span>
+            </p>
+          </div>
+        </div>
+      )}
+      {!partes && detalle?.length > 0 && (
         <div className="mb-5 rounded-xl bg-fondo p-4">
           <ul className="space-y-1.5">
-            {detalle.map((d, i) => (
+            {lineas.map((d, i) => (
               <li key={i} className="flex justify-between gap-3 text-sm">
                 <span><strong className="num">{numero(d.cantidad)}×</strong> {d.nombre}</span>
                 <span className="num">{pesos(d.subtotal)}</span>
@@ -175,7 +265,17 @@ export default function Cobro({
             <span className="font-semibold">{etiquetaTotal}</span>
             <span className="font-display text-2xl font-extrabold text-tinta num">{pesos(total)}</span>
           </p>
+          {dividible && (
+            <button onClick={() => setPartes({})} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-linea bg-papel py-2.5 font-semibold text-tinta hover:border-tinta/40">
+              <Split size={17} aria-hidden /> Dividir la cuenta
+            </button>
+          )}
         </div>
+      )}
+      {!partes && !detalle?.length && onDividir && (
+        <button onClick={onDividir} className="mb-5 flex w-full items-center justify-center gap-2 rounded-lg border border-linea bg-papel py-2.5 font-semibold text-tinta hover:border-tinta/40">
+          <Split size={17} aria-hidden /> Dividir la cuenta (cada uno paga lo suyo)
+        </button>
       )}
       {negocio.permitir_fiado && (
         <div className="mb-5 grid grid-cols-2 rounded-lg bg-fondo p-1 text-sm font-semibold" role="tablist">
@@ -301,7 +401,8 @@ export default function Cobro({
           data-autofocus
         >
           {modo === "fiar" ? <HandCoins size={22} aria-hidden /> : <Check size={22} aria-hidden />}
-          {vender.isPending ? "Registrando…" : modo === "fiar" ? "Registrar fiado" : textoBoton || "Registrar venta"}
+          {vender.isPending ? "Registrando…" : partes && !todo ? `Cobrar a la persona ${cobradas.length + 1}`
+            : modo === "fiar" ? "Registrar fiado" : textoBoton || "Registrar venta"}
         </Boton>
       </div>
     </Hoja>

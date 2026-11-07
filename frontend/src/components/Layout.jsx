@@ -84,7 +84,8 @@ export default function Layout() {
     enabled: Boolean(usaCola) && !cobraDeUna(negocio),
     refetchInterval: 15_000,
   });
-  const pendientes = lista.length;
+  // Una cuenta dividida son varias ventas con el mismo turno: cuenta como un pedido
+  const pendientes = new Set(lista.map((p) => p.turno ?? `v${p.id}`)).size;
 
   // El menú se cierra al cambiar de página, con Escape, y bloquea el scroll del fondo mientras está abierto
   useEffect(() => setAbierto(false), [pathname]);

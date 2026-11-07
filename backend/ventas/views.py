@@ -28,7 +28,7 @@ class ClienteSerializer(serializers.ModelSerializer):
 class DetalleSerializer(serializers.ModelSerializer):
     class Meta:
         model = DetalleVenta
-        fields = ["producto", "nombre", "cantidad", "precio_unitario", "subtotal", "por_conseguir"]
+        fields = ["id", "producto", "nombre", "cantidad", "precio_unitario", "subtotal", "por_conseguir"]
 
 
 class PagoSerializer(serializers.ModelSerializer):
@@ -84,7 +84,13 @@ class VentaEntrada(serializers.Serializer):
     fecha = serializers.DateField(required=False, allow_null=True)
 
 
+class ParteEntrada(serializers.Serializer):
+    detalle = serializers.IntegerField()
+    cantidad = serializers.DecimalField(max_digits=14, decimal_places=3)
+
+
 class CobroEntrada(serializers.Serializer):
+    partes = ParteEntrada(many=True, required=False, default=list)  # dividir la cuenta: lo que paga esta persona
     pagos = PagoEntrada(many=True, required=False, default=list)
     cliente = serializers.IntegerField(required=False, allow_null=True)
     efectivo_recibido = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
@@ -268,8 +274,10 @@ class VentaViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin
         e.is_valid(raise_exception=True)
         d = e.validated_data
         v = servicios.cobrar_pedido(self.negocio, request.user, self.get_object(), d.get("pagos"),
-                                    self._cliente(d.get("cliente")), d.get("efectivo_recibido"))
-        return self._respuesta(v)
+                                    self._cliente(d.get("cliente")), d.get("efectivo_recibido"), d.get("partes"))
+        r = self._respuesta(v)
+        r.data["resto"] = VentaSerializer(v.resto).data if v.resto else None  # lo que sigue por cobrar
+        return r
 
     @action(detail=True, methods=["post"])
     def editar(self, request, pk=None):
@@ -336,7 +344,7 @@ class PedidoViewSet(TenantMixin, viewsets.GenericViewSet):
             "cliente": v.cliente.nombre if v.cliente else None, "cliente_id": v.cliente_id, "nota": v.nota,
             "subtotal": v.subtotal, "descuento": v.descuento, "total": v.total, "saldo_pendiente": v.saldo_pendiente,
             "estado_pago": v.estado, "origen": v.origen,
-            "items": [{"producto": d.producto_id, "nombre": d.nombre, "cantidad": d.cantidad,
+            "items": [{"id": d.id, "producto": d.producto_id, "nombre": d.nombre, "cantidad": d.cantidad,
                        "precio_unitario": d.precio_unitario, "subtotal": d.subtotal} for d in v.detalles.all()],
         }
 
@@ -350,19 +358,27 @@ class PedidoViewSet(TenantMixin, viewsets.GenericViewSet):
             qs = qs.filter(Q(entregado_en__isnull=True) | Q(estado=Venta.Estado.ABIERTA)).order_by("creado")[:150]
         return Response([self._dato(v) for v in qs])
 
+    def _mismo_turno(self, v):
+        """Si la cuenta se dividió, cada parte es otra venta con el mismo turno: se entregan juntas."""
+        if not v.turno:
+            return Venta.objects.filter(pk=v.pk)
+        from negocios.utils import rango_dia
+        ini, fin = rango_dia(timezone.localdate(v.creado))
+        return self.get_queryset().filter(turno=v.turno, creado__gte=ini, creado__lt=fin)
+
     @action(detail=True, methods=["post"])
     def entregar(self, request, pk=None):
         v = self.get_object()
-        if v.entregado_en is None:
-            v.entregado_en, v.entregado_por = timezone.now(), request.user
-            v.save(update_fields=["entregado_en", "entregado_por", "actualizado"])
+        self._mismo_turno(v).filter(entregado_en__isnull=True).update(
+            entregado_en=timezone.now(), entregado_por=request.user, actualizado=timezone.now())
+        v.refresh_from_db()
         return Response(self._dato(v))
 
     @action(detail=True, methods=["post"])
     def deshacer(self, request, pk=None):
         v = self.get_object()
-        v.entregado_en, v.entregado_por = None, None
-        v.save(update_fields=["entregado_en", "entregado_por", "actualizado"])
+        self._mismo_turno(v).update(entregado_en=None, entregado_por=None, actualizado=timezone.now())
+        v.refresh_from_db()
         return Response(self._dato(v))
 
 

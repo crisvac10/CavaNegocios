@@ -196,12 +196,79 @@ def crear_venta(negocio, usuario, items, pagos, descuento=0, cliente=None,
     return venta
 
 
+def _totales(venta):
+    """Recalcula subtotal, total y costo de una venta a partir de sus líneas."""
+    lineas = list(venta.detalles.all())
+    venta.subtotal = sum((d.subtotal for d in lineas), CERO)
+    venta.costo_total = sum((d.cantidad * d.costo_unitario for d in lineas), CERO)
+    venta.total = venta.subtotal - venta.descuento
+    venta.saldo_pendiente = venta.total
+
+
+def _separar(negocio, venta, partes):
+    """
+    Dividir la cuenta: saca de un pedido por cobrar lo que paga una persona y lo deja como otra venta
+    por cobrar (mismo turno y mesa). Devuelve esa venta nueva; el pedido original queda con el resto.
+    El descuento se reparte en proporción a lo que se lleva cada parte.
+    """
+    detalles = {d.id: d for d in venta.detalles.all()}
+    tomar = {}
+    for p in partes:
+        d = detalles.get(int(p["detalle"]))
+        cant = Decimal(str(p["cantidad"]))
+        if d is None:
+            raise ValidationError("Ese producto no está en el pedido.")
+        if cant <= 0:
+            continue
+        tomar[d.id] = tomar.get(d.id, CERO) + cant
+        if tomar[d.id] > d.cantidad:
+            raise ValidationError(f"El pedido solo tiene {d.cantidad.normalize():f} de {d.nombre}.")
+    if not tomar:
+        raise ValidationError("Elige lo que paga esta persona.")
+    if all(tomar.get(i, CERO) == d.cantidad for i, d in detalles.items()):
+        return None  # se lleva todo: no hay nada que dividir
+
+    sub_parte = sum((detalles[i].precio_unitario * c for i, c in tomar.items()), CERO)
+    desc_parte = (venta.descuento * sub_parte / venta.subtotal).quantize(Decimal("1")) if venta.subtotal else CERO
+    nueva = Venta.objects.create(
+        negocio=negocio, numero=Consecutivo.siguiente(negocio, "venta"), sesion_caja=venta.sesion_caja,
+        turno=venta.turno, mesa=venta.mesa, nota=venta.nota, usuario=venta.usuario, cliente=venta.cliente,
+        entregado_en=venta.entregado_en, entregado_por=venta.entregado_por, estado=Venta.Estado.ABIERTA,
+        subtotal=CERO, descuento=min(desc_parte, sub_parte), total=CERO,
+    )
+    for i, cant in tomar.items():
+        d = detalles[i]
+        DetalleVenta.objects.create(venta=nueva, producto=d.producto, nombre=d.nombre, cantidad=cant,
+                                    precio_unitario=d.precio_unitario, costo_unitario=d.costo_unitario,
+                                    subtotal=d.precio_unitario * cant)
+        if cant == d.cantidad:
+            d.delete()
+        else:
+            d.cantidad -= cant
+            d.subtotal = d.precio_unitario * d.cantidad
+            d.save(update_fields=["cantidad", "subtotal"])
+    _totales(nueva)
+    nueva.save()
+    venta.descuento -= nueva.descuento
+    _totales(venta)
+    venta.save()
+    return nueva
+
+
 @transaction.atomic
-def cobrar_pedido(negocio, usuario, venta, pagos, cliente=None, efectivo_recibido=None):
-    """Cobra un pedido registrado (por cobrar). Lo que falte se fía a un cliente."""
-    venta = Venta.objects.select_for_update().get(pk=venta.pk, negocio=negocio)
+def cobrar_pedido(negocio, usuario, venta, pagos, cliente=None, efectivo_recibido=None, partes=None):
+    """
+    Cobra un pedido registrado (por cobrar). Lo que falte se fía a un cliente.
+    Con `partes` (dividir la cuenta) cobra solo esos productos; el resto sigue por cobrar en `venta.resto`.
+    """
+    venta = Venta.objects.select_for_update(of=("self",)).get(pk=venta.pk, negocio=negocio)
     if venta.estado != Venta.Estado.ABIERTA:
         raise ValidationError("Este pedido ya está cobrado.")
+    resto = None
+    if partes:
+        parte = _separar(negocio, venta, partes)
+        if parte is not None:
+            resto, venta = venta, parte
     sesion = caja.sesion_abierta(negocio, requerida=negocio.usa_caja)
     pagos_limpios, pagado = _pagos(negocio, pagos)
     if pagado > venta.total:
@@ -214,6 +281,7 @@ def cobrar_pedido(negocio, usuario, venta, pagos, cliente=None, efectivo_recibid
     venta.estado = Venta.Estado.FIADO if saldo > 0 else Venta.Estado.PAGADA
     venta.save()
     _cobrar(venta, pagos_limpios, usuario, None, sesion)
+    venta.resto = resto
     return venta
 
 

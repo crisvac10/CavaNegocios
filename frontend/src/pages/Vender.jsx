@@ -446,6 +446,20 @@ export default function Vender() {
     }),
     onSuccess: alVender,
   });
+  // Dividir una venta nueva: se registra como pedido y se cobra por partes
+  const dividirCarrito = useMutation({
+    mutationFn: () => api("/ventas/", {
+      method: "POST",
+      body: { items: itemsPedido(), registrar: true, descuento, nota, mesa, entregar_ya: true },
+    }),
+    onSuccess: (v) => {
+      setCobrando(false);
+      setCuentaMovil(false);
+      vaciar();
+      refrescar();
+      setCobrandoPedido({ ...v, dividir: true });
+    },
+  });
   const guardarEncargo = useMutation({
     mutationFn: () => api("/encargos/", {
       method: "POST",
@@ -535,7 +549,7 @@ export default function Vender() {
             )}
           </div>
         )}
-        {(registrar.error || guardarEncargo.error) && <div className="mb-4"><Aviso>{(registrar.error || guardarEncargo.error).message}</Aviso></div>}
+        {(registrar.error || guardarEncargo.error || dividirCarrito.error) && <div className="mb-4"><Aviso>{(registrar.error || guardarEncargo.error || dividirCarrito.error).message}</Aviso></div>}
         {cajaCerrada && !registrarPrimero && !enEncargo && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-precio-claro px-4 py-3">
             <p className="font-medium">La caja está cerrada. Ábrela para empezar a vender.</p>
@@ -637,6 +651,7 @@ export default function Vender() {
           negocio={negocio}
           items={itemsPedido()}
           extra={{ nota, entregar_ya: entregarYa, mesa, ...(fecha ? { fecha } : {}) }}
+          onDividir={!fecha && lineas.length && (lineas.length > 1 || lineas[0].cantidad > 1) ? () => dividirCarrito.mutate() : null}
           onListo={alVender}
           onCerrar={() => setCobrando(false)}
         />
@@ -646,8 +661,10 @@ export default function Vender() {
           ventaId={cobrandoPedido.id}
           total={Number(cobrandoPedido.total)}
           detalle={cobrandoPedido.detalles}
-          titulo={`Cobrar turno ${cobrandoPedido.turno}`}
+          titulo={cobrandoPedido.dividir ? "Dividir la cuenta" : `Cobrar turno ${cobrandoPedido.turno}`}
           negocio={negocio}
+          dividirAlAbrir={Boolean(cobrandoPedido.dividir)}
+          onParte={refrescar}
           onListo={alVender}
           onCerrar={() => setCobrandoPedido(null)}
         />
