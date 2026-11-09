@@ -801,6 +801,44 @@ class GastosComprasYCreditosAnteriores(Base):
         self.assertEqual((self.cafe.stock, self.cafe.costo), (30, Decimal("1500.00")))
         self.assertEqual(self.ok(self.c.get(f"/api/caja/dia/?fecha={ayer}"))["salidas"], 45000)
 
+    def test_compra_con_insumos_editar_y_eliminar(self):
+        self.login("dueno")
+        # 20 cafés para vender (entran al inventario) + leche y vasos que no están en el menú (son gasto)
+        c = self.ok(self.c.post("/api/compras/", {"items": [
+            {"producto": self.cafe.id, "cantidad": 20, "total": 30000},
+            {"nombre": "Leche entera 6 L", "cantidad": 2, "total": 24000},
+            {"nombre": "Vasos 7 oz", "cantidad": 100, "total": 9000}]}, format="json"), 201)
+        self.assertEqual((c["total"], c["total_insumos"]), (63000, 33000))
+        self.assertEqual([d["insumo"] for d in c["detalles"]], [False, True, True])
+        self.cafe.refresh_from_db(); self.assertEqual(self.cafe.stock, 20)
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["salidas"], 63000)
+        r = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual((r["gastos_operativos"], r["compras_mercancia"]), (33000, 30000))
+        self.assertIn("Insumos (compras)", [g["categoria_nombre"] for g in r["gastos_por_categoria"]])
+        # Sin producto ni nombre no se puede
+        self.assertEqual(self.c.post("/api/compras/", {"items": [{"cantidad": 1, "total": 1000}]}, format="json").status_code, 400)
+
+        # Se equivocaron: eran 10 cafés por $15.000 y no hubo vasos
+        e = self.ok(self.c.post(f"/api/compras/{c['id']}/editar/", {"items": [
+            {"producto": self.cafe.id, "cantidad": 10, "total": 15000},
+            {"nombre": "Leche entera 6 L", "cantidad": 2, "total": 24000}]}, format="json"))
+        self.assertEqual((e["numero"], e["total"]), (c["numero"], 39000))
+        self.assertIsNotNone(e["editada_en"])
+        self.cafe.refresh_from_db(); self.assertEqual((self.cafe.stock, self.cafe.costo), (10, Decimal("1500.00")))
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["salidas"], 39000)
+
+        # Y al final se ingresó sin querer: se elimina y todo vuelve a como estaba
+        self.ok(self.c.post(f"/api/compras/{c['id']}/eliminar/", {"motivo": "duplicada"}, format="json"))
+        self.cafe.refresh_from_db(); self.assertEqual(self.cafe.stock, 0)
+        self.assertEqual(self.ok(self.c.get("/api/caja/dia/"))["salidas"], 0)
+        self.assertEqual(self.ok(self.c.get("/api/compras/")), [])
+        r = self.ok(self.c.get("/api/reportes/resumen/"))
+        self.assertEqual((r["gastos_operativos"], r["compras_mercancia"]), (0, 0))
+        self.assertEqual(self.c.post(f"/api/compras/{c['id']}/eliminar/").status_code, 400)
+        # El cajero no puede tocar compras
+        self.login("cajero")
+        self.assertEqual(self.c.post(f"/api/compras/{c['id']}/editar/", {"items": []}, format="json").status_code, 403)
+
     def test_borrar_credito_limpia_el_cuadre(self):
         self.login("dueno")
         cr = self.ok(self.c.post("/api/creditos/", {"entidad": "Banco", "monto": 1_000_000, "tasa": 24, "num_cuotas": 6,

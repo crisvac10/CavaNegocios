@@ -8,7 +8,7 @@ from catalogo.models import Producto
 from .models import MovimientoInventario
 
 T = MovimientoInventario.Tipo
-SALIDAS = {T.VENTA, T.AJUSTE_SALIDA, T.CONSUMO_INTERNO, T.MERMA}
+SALIDAS = {T.VENTA, T.AJUSTE_SALIDA, T.CONSUMO_INTERNO, T.MERMA, T.ANULACION_COMPRA}
 
 
 @transaction.atomic

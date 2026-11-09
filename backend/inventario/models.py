@@ -9,6 +9,7 @@ class MovimientoInventario(TenantModel):
         VENTA = "VENTA", "Venta"
         ANULACION_VENTA = "ANULACION_VENTA", "Anulación de venta"
         COMPRA = "COMPRA", "Compra a proveedor"
+        ANULACION_COMPRA = "ANULACION_COMPRA", "Compra eliminada o corregida"
         AJUSTE_ENTRADA = "AJUSTE_ENTRADA", "Ajuste de entrada"
         AJUSTE_SALIDA = "AJUSTE_SALIDA", "Ajuste de salida"
         CONSUMO_INTERNO = "CONSUMO_INTERNO", "Consumo interno"

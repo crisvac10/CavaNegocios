@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PackagePlus, Plus, Trash2, Truck } from "lucide-react";
+import { PackagePlus, Pencil, Plus, Trash2, Truck } from "lucide-react";
 import { api } from "../lib/api";
 import { fechaCorta, hoyISO, MEDIOS, numero, periodo, pesos } from "../lib/formato";
 import { useSesion } from "../context/Sesion";
@@ -161,52 +161,79 @@ function ListaGastos({ per }) {
 }
 
 /* ---------- Compras ---------- */
-function NuevaCompra({ proveedores, onCerrar }) {
+const OTRO = "otro"; // línea de algo que no está en el menú (insumo)
+const lineaDe = (d) => ({ producto: d.insumo ? OTRO : String(d.producto), nombre: d.insumo ? d.nombre : "", cantidad: String(Number(d.cantidad)), total: Number(d.subtotal) });
+
+/** Nueva compra o corregir una ya registrada (`compra`). */
+function FormCompra({ proveedores, compra, onCerrar }) {
   const qc = useQueryClient();
   const { negocio } = useSesion();
   const medios = negocio.medios_pago_activos;
   const { data: productos = [] } = useQuery({ queryKey: ["productos", "admin"], queryFn: () => api("/productos/") });
-  const activos = productos.filter((p) => p.activo);
+  const activos = productos.filter((p) => p.activo || compra?.detalles.some((d) => d.producto === p.id));
   // Se escribe lo que dice la factura: cuántas unidades y cuánto se pagó por todas; el valor por unidad sale solo
-  const [items, setItems] = useState([{ producto: "", cantidad: "", total: 0 }]);
-  const [f, setF] = useState({ proveedor: "", medio: medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0], pagado_de_caja: true, nota: "", fecha: hoyISO() });
+  const [items, setItems] = useState(compra ? compra.detalles.map(lineaDe) : [{ producto: "", nombre: "", cantidad: "", total: 0 }]);
+  const [f, setF] = useState(compra
+    ? { proveedor: compra.proveedor || "", medio: compra.medio, pagado_de_caja: compra.pagado_de_caja, nota: compra.nota, fecha: compra.fecha }
+    : { proveedor: "", medio: medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0], pagado_de_caja: true, nota: "", fecha: hoyISO() });
+  const [confirmar, setConfirmar] = useState(false);
   const total = items.reduce((s, it) => s + (it.total || 0), 0);
+  const insumos = items.reduce((s, it) => s + (it.producto === OTRO ? it.total || 0 : 0), 0);
   const setItem = (i, k, v) => setItems((xs) => xs.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
   const unitario = (it) => (Number(it.cantidad) > 0 && it.total > 0 ? it.total / Number(it.cantidad) : null);
-  const validos = items.filter((it) => it.producto && Number(it.cantidad) > 0 && it.total > 0);
+  const validos = items.filter((it) => (it.producto === OTRO ? it.nombre.trim() : it.producto) && Number(it.cantidad) > 0 && it.total > 0);
+  const listo = () => { ["compras", "productos", "caja", "reportes"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })); onCerrar(); };
   const guardar = useMutation({
-    mutationFn: () => api("/compras/", {
+    mutationFn: () => api(compra ? `/compras/${compra.id}/editar/` : "/compras/", {
       method: "POST",
-      body: { ...f, proveedor: f.proveedor || null, items: validos.map((it) => ({ producto: Number(it.producto), cantidad: Number(it.cantidad), total: it.total })) },
+      body: {
+        ...f, proveedor: f.proveedor || null,
+        items: validos.map((it) => (it.producto === OTRO
+          ? { nombre: it.nombre.trim(), cantidad: Number(it.cantidad), total: it.total }
+          : { producto: Number(it.producto), cantidad: Number(it.cantidad), total: it.total })),
+      },
     }),
-    onSuccess: () => { ["compras", "productos", "caja"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })); onCerrar(); },
+    onSuccess: listo,
+  });
+  const eliminar = useMutation({
+    mutationFn: () => api(`/compras/${compra.id}/eliminar/`, { method: "POST", body: {} }),
+    onSuccess: listo,
   });
 
   return (
-    <Hoja titulo="Nueva compra de mercancía" onCerrar={onCerrar} ancho="max-w-2xl">
-      <p className="-mt-2 mb-4 text-sm text-suave">Suma al inventario y actualiza el costo de cada producto. No cuenta como gasto: se vuelve costo cuando lo vendes.</p>
+    <Hoja titulo={compra ? `Compra #${compra.numero}` : "Nueva compra a proveedor"} onCerrar={onCerrar} ancho="max-w-2xl">
+      <p className="-mt-2 mb-4 text-sm text-suave">
+        Lo del menú suma al inventario y actualiza su costo. Lo que no está en el menú (leche, vasos, servilletas…) se elige como
+        <strong> Otro</strong>: no entra al inventario y cuenta como gasto.
+      </p>
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); guardar.mutate(); }}>
         <div className="space-y-2">
           {items.map((it, i) => (
             <div key={i} className="rounded-lg border border-linea p-2 sm:border-0 sm:p-0">
-              <div className="grid grid-cols-[5.5rem_1fr] gap-2 sm:grid-cols-[1fr_6rem_10rem_2.5rem]">
-                <select value={it.producto} onChange={(e) => setItem(i, "producto", e.target.value)} className={`${campo} col-span-2 sm:col-span-1`} aria-label="Producto">
+              <div className="grid grid-cols-[5.5rem_1fr_2.5rem] gap-2 sm:grid-cols-[1fr_6rem_10rem_2.5rem]">
+                <select value={it.producto} onChange={(e) => setItem(i, "producto", e.target.value)} className={`${campo} col-span-3 sm:col-span-1`} aria-label="Producto">
                   <option value="">Producto…</option>
                   {activos.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                  <option value={OTRO}>Otro (no está en el menú)…</option>
                 </select>
+                {it.producto === OTRO && (
+                  <input value={it.nombre} onChange={(e) => setItem(i, "nombre", e.target.value)} placeholder="¿Qué compraste? Ej. Leche 6 L, vasos 7 oz"
+                    className={`${campo} col-span-3 sm:order-last sm:col-span-3`} aria-label="Qué compraste" autoFocus />
+                )}
                 <input inputMode="decimal" placeholder="Unidades" value={it.cantidad} onChange={(e) => setItem(i, "cantidad", e.target.value.replace(",", "."))} className={campo} aria-label="Unidades compradas" />
                 <InputPesos valor={it.total} onCambio={(v) => setItem(i, "total", v)} placeholder="Total pagado" aria-label="Total pagado por estas unidades" />
-                <button type="button" onClick={() => setItems((xs) => xs.length > 1 ? xs.filter((_, j) => j !== i) : xs)} className="hidden place-items-center rounded-lg text-suave hover:text-alerta sm:grid" aria-label="Quitar línea">
+                <button type="button" onClick={() => setItems((xs) => xs.length > 1 ? xs.filter((_, j) => j !== i) : xs)} className="grid place-items-center rounded-lg text-suave hover:text-alerta" aria-label="Quitar línea">
                   <Trash2 size={17} />
                 </button>
               </div>
               <p className="mt-1 text-right text-xs text-suave sm:pr-12">
+                {it.producto === OTRO && <span className="mr-2 rounded bg-precio-claro px-1.5 py-0.5 font-semibold text-texto">Gasto · no entra al inventario</span>}
                 {unitario(it) != null ? <>Sale a <strong className="num">{pesos(unitario(it))}</strong> por unidad</> : "Unidades y total pagado → valor por unidad"}
               </p>
             </div>
           ))}
-          <button type="button" onClick={() => setItems((xs) => [...xs, { producto: "", cantidad: "", costo_unitario: 0 }])} className="flex items-center gap-1.5 text-sm font-semibold text-tinta">
-            <Plus size={16} aria-hidden /> Agregar producto
+          <button type="button" onClick={() => setItems((xs) => [...xs, { producto: "", nombre: "", cantidad: "", total: 0 }])} className="flex items-center gap-1.5 text-sm font-semibold text-tinta">
+            <Plus size={16} aria-hidden /> Agregar otra línea
           </button>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -214,7 +241,7 @@ function NuevaCompra({ proveedores, onCerrar }) {
             <span className="mb-1.5 block text-sm font-semibold">Proveedor <span className="font-normal text-suave">(opcional)</span></span>
             <select value={f.proveedor} onChange={(e) => setF({ ...f, proveedor: e.target.value ? Number(e.target.value) : "" })} className={campo}>
               <option value="">Sin proveedor</option>
-              {proveedores.filter((p) => p.activo).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+              {proveedores.filter((p) => p.activo || p.id === compra?.proveedor).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
             </select>
           </label>
           <label className="block">
@@ -227,38 +254,73 @@ function NuevaCompra({ proveedores, onCerrar }) {
             <span className="mb-1.5 block text-sm font-semibold">Fecha de la compra</span>
             <input type="date" max={hoyISO()} value={f.fecha} onChange={(e) => setF({ ...f, fecha: e.target.value })} className={campo} />
           </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-semibold">Nota <span className="font-normal text-suave">(opcional)</span></span>
+            <input value={f.nota} onChange={(e) => setF({ ...f, nota: e.target.value })} placeholder="Ej. factura 1234" className={campo} />
+          </label>
         </div>
         <label className="flex items-start gap-3 rounded-lg bg-fondo p-3 text-sm">
           <input type="checkbox" checked={f.pagado_de_caja} onChange={(e) => setF({ ...f, pagado_de_caja: e.target.checked })} className="mt-0.5 h-4 w-4 accent-tinta" />
           <span><strong>Salió de la plata del negocio{f.fecha === hoyISO() ? " hoy" : " ese día"}.</strong> Se descuenta en el cuadre de {f.fecha === hoyISO() ? "hoy" : "esa fecha"}.</span>
         </label>
-        <div className="flex items-baseline justify-between border-t-2 border-tinta pt-3">
-          <span className="font-display text-lg font-bold text-tinta">Total compra</span>
-          <span className="font-display text-2xl font-extrabold text-tinta num">{pesos(total)}</span>
+        <div className="border-t-2 border-tinta pt-3">
+          <div className="flex items-baseline justify-between">
+            <span className="font-display text-lg font-bold text-tinta">Total compra</span>
+            <span className="font-display text-2xl font-extrabold text-tinta num">{pesos(total)}</span>
+          </div>
+          {insumos > 0 && (
+            <p className="mt-1 flex justify-between text-sm text-suave">
+              <span>Mercancía {pesos(total - insumos)} · Gasto en insumos {pesos(insumos)}</span>
+            </p>
+          )}
         </div>
-        {guardar.error && <Aviso>{guardar.error.message}</Aviso>}
+        {(guardar.error || eliminar.error) && <Aviso>{(guardar.error || eliminar.error).message}</Aviso>}
         <Boton className="w-full" disabled={!validos.length || guardar.isPending}>
-          <PackagePlus size={18} aria-hidden /> {guardar.isPending ? "Guardando…" : "Registrar compra"}
+          <PackagePlus size={18} aria-hidden /> {guardar.isPending ? "Guardando…" : compra ? "Guardar cambios" : "Registrar compra"}
         </Boton>
       </form>
+      {compra && (
+        <div className="mt-5 border-t border-linea pt-4">
+          {!confirmar ? (
+            <button onClick={() => setConfirmar(true)} className="flex items-center gap-2 text-sm font-semibold text-alerta">
+              <Trash2 size={16} aria-hidden /> Eliminar esta compra
+            </button>
+          ) : (
+            <div className="rounded-lg bg-alerta/10 p-3 text-sm">
+              <p className="font-semibold">¿Eliminar la compra #{compra.numero}?</p>
+              <p className="mt-1 text-suave">
+                Se saca del inventario lo que entró{compra.pagado_de_caja ? " y la plata vuelve al cuadre" : ""}. Úsalo si se ingresó por error o repetida.
+              </p>
+              <div className="mt-3 flex gap-2">
+                <button onClick={() => eliminar.mutate()} disabled={eliminar.isPending} className="rounded-lg bg-alerta px-3 py-2 font-semibold text-white disabled:opacity-60">
+                  {eliminar.isPending ? "Eliminando…" : "Sí, eliminar"}
+                </button>
+                <button onClick={() => setConfirmar(false)} className="rounded-lg px-3 py-2 font-semibold text-tinta">No</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </Hoja>
   );
 }
 
 function ListaCompras({ per, proveedores }) {
-  const [nueva, setNueva] = useState(false);
+  const [abierta, setAbierta] = useState(null); // null | "nueva" | compra
   const { desde, hasta } = periodo(per);
   const { data: compras = [], isLoading, error } = useQuery({ queryKey: ["compras"], queryFn: () => api("/compras/") });
   const enPeriodo = compras.filter((c) => c.fecha >= desde && c.fecha <= hasta);
   const total = enPeriodo.reduce((s, c) => s + Number(c.total), 0);
+  const insumos = enPeriodo.reduce((s, c) => s + Number(c.total_insumos || 0), 0);
   return (
     <>
       <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
         <div className="rounded-2xl bg-papel p-5">
-          <p className="text-suave">Compras de mercancía en el periodo</p>
+          <p className="text-suave">Compras a proveedores en el periodo</p>
           <p className="font-display text-4xl font-extrabold text-tinta num">{pesos(total)}</p>
+          {insumos > 0 && <p className="mt-1 text-sm text-suave">Mercancía {pesos(total - insumos)} · Insumos (gasto) {pesos(insumos)}</p>}
         </div>
-        <Boton onClick={() => setNueva(true)}><Plus size={18} aria-hidden /> Nueva compra</Boton>
+        <Boton onClick={() => setAbierta("nueva")}><Plus size={18} aria-hidden /> Nueva compra</Boton>
       </div>
       {error && <div className="mt-4"><Aviso>{error.message}</Aviso></div>}
       {isLoading ? <p className="py-8 text-suave">Cargando…</p> : enPeriodo.length === 0 ? (
@@ -266,17 +328,28 @@ function ListaCompras({ per, proveedores }) {
       ) : (
         <ul className="mt-4 divide-y divide-linea overflow-hidden rounded-xl bg-papel">
           {enPeriodo.map((c) => (
-            <li key={c.id} className="px-4 py-3">
-              <div className="flex justify-between gap-3">
-                <span className="font-medium">#{c.numero} · {fechaCorta(c.fecha)}{c.proveedor_nombre ? ` · ${c.proveedor_nombre}` : ""}</span>
-                <span className="font-semibold num">{pesos(c.total)}</span>
-              </div>
-              <p className="truncate text-sm text-suave">{c.detalles.map((d) => `${numero(d.cantidad)} ${d.nombre}`).join(", ")}</p>
+            <li key={c.id}>
+              <button onClick={() => setAbierta(c)} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-fondo">
+                <div className="min-w-0 flex-1">
+                  <div className="flex justify-between gap-3">
+                    <span className="font-medium">#{c.numero} · {fechaCorta(c.fecha)}{c.proveedor_nombre ? ` · ${c.proveedor_nombre}` : ""}</span>
+                    <span className="font-semibold num">{pesos(c.total)}</span>
+                  </div>
+                  <p className="truncate text-sm text-suave">
+                    {c.detalles.map((d) => `${numero(d.cantidad)} ${d.nombre}`).join(", ")}
+                    {c.editada_en ? " · corregida" : ""}
+                  </p>
+                </div>
+                <Pencil size={16} className="shrink-0 text-suave" aria-label="Editar o eliminar" />
+              </button>
             </li>
           ))}
         </ul>
       )}
-      {nueva && <NuevaCompra proveedores={proveedores} onCerrar={() => setNueva(false)} />}
+      {abierta && (
+        <FormCompra key={abierta === "nueva" ? "nueva" : abierta.id} proveedores={proveedores}
+          compra={abierta === "nueva" ? null : abierta} onCerrar={() => setAbierta(null)} />
+      )}
     </>
   );
 }
@@ -316,7 +389,7 @@ export default function Gastos() {
   const [tab, setTab] = useState("gastos");
   const [per, setPer] = useState("mes");
   const { data: proveedores = [] } = useQuery({ queryKey: ["proveedores"], queryFn: () => api("/proveedores/"), enabled: esAdmin });
-  const tabs = [["gastos", "Gastos"], ...(esAdmin ? [["compras", "Compras de mercancía"], ["proveedores", "Proveedores"]] : [])];
+  const tabs = [["gastos", "Gastos"], ...(esAdmin ? [["compras", "Compras a proveedores"], ["proveedores", "Proveedores"]] : [])];
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-5 lg:px-6 lg:py-8">

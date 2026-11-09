@@ -345,13 +345,13 @@ async function cartelQR(negocio, url) {
   const c = document.createElement("canvas");
   c.width = W; c.height = H;
   const x = c.getContext("2d");
-  x.fillStyle = "#16324F"; x.fillRect(0, 0, W, H);
+  x.fillStyle = "#000000"; x.fillRect(0, 0, W, H);
   x.fillStyle = "#ffffff"; x.textAlign = "center";
   x.font = "800 92px 'Bricolage Grotesque', sans-serif";
   x.fillText(negocio.nombre, W / 2, 220, W - 120);
   x.fillStyle = "#F4B400";
   x.beginPath(); x.roundRect(170, 330, 860, 860, 48); x.fill();
-  const qr = await cargarImagen(await QRCode.toDataURL(url, { width: 760, margin: 1, color: { dark: "#16324F", light: "#FFFFFF" } }));
+  const qr = await cargarImagen(await QRCode.toDataURL(url, { width: 760, margin: 1, color: { dark: "#000000", light: "#FFFFFF" } }));
   x.drawImage(qr, 220, 380, 760, 760);
   x.fillStyle = "#ffffff";
   x.font = "700 64px 'Figtree', sans-serif";
@@ -366,7 +366,7 @@ function MenuQR({ negocio }) {
   const [qr, setQr] = useState("");
   const [copiado, setCopiado] = useState(false);
   useEffect(() => {
-    QRCode.toDataURL(url, { width: 480, margin: 1, color: { dark: "#16324F", light: "#FFFFFF" } }).then(setQr);
+    QRCode.toDataURL(url, { width: 480, margin: 1, color: { dark: "#000000", light: "#FFFFFF" } }).then(setQr);
   }, [url]);
 
   const descargar = async () => {
@@ -381,7 +381,7 @@ function MenuQR({ negocio }) {
 
   return (
     <div className="grid max-w-3xl gap-6 md:grid-cols-[280px_1fr]">
-      <div className="rounded-2xl bg-tinta p-5 text-center text-white">
+      <div className="rounded-2xl bg-black p-5 text-center text-white">
         <p className="font-display text-xl font-bold">{negocio.nombre}</p>
         <div className="mx-auto mt-4 rounded-xl bg-precio p-3">
           {qr && <img src={qr} alt={`Código QR del menú de ${negocio.nombre}`} className="w-full rounded-md" />}

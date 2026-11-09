@@ -58,6 +58,8 @@ class Compra(TenantModel):
     pagado_de_caja = models.BooleanField(default=True)
     nota = models.CharField(max_length=200, blank=True)
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    anulada = models.BooleanField(default=False)  # se ingresó por error: se devuelve el inventario y la plata
+    editada_en = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-fecha", "-id"]
@@ -66,7 +68,9 @@ class Compra(TenantModel):
 
 class DetalleCompra(models.Model):
     compra = models.ForeignKey(Compra, on_delete=models.CASCADE, related_name="detalles")
-    producto = models.ForeignKey("catalogo.Producto", on_delete=models.PROTECT)
+    # Sin producto = algo que no se vende (leche, vasos, servilletas): no entra al inventario y cuenta como gasto
+    producto = models.ForeignKey("catalogo.Producto", on_delete=models.PROTECT, null=True, blank=True)
+    nombre = models.CharField(max_length=120, blank=True)
     cantidad = models.DecimalField(max_digits=14, decimal_places=3)
     costo_unitario = models.DecimalField(max_digits=14, decimal_places=2)
     subtotal = models.DecimalField(max_digits=14, decimal_places=2)

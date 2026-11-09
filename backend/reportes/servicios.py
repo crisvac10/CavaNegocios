@@ -32,6 +32,13 @@ def ventas_validas(negocio, desde, hasta):
             .exclude(origen=Venta.Origen.SALDO_ANTERIOR))
 
 
+def _insumos(negocio, desde, hasta):
+    """Líneas de compra sin producto (leche, vasos…): no son mercancía, cuentan como gasto el día de la compra."""
+    from gastos.models import DetalleCompra
+    return DetalleCompra.objects.filter(compra__negocio=negocio, compra__anulada=False, producto__isnull=True,
+                                        compra__fecha__range=(desde, hasta))
+
+
 def serie_diaria(negocio, desde, hasta):
     """[{fecha, ventas, costo, gastos, utilidad_operativa, intereses, utilidad_neta, num_ventas}] por día."""
     from creditos.models import PagoCredito
@@ -48,6 +55,8 @@ def serie_diaria(negocio, desde, hasta):
     for f in (Gasto.objects.filter(negocio=negocio, anulado=False, fecha__range=(desde, hasta))
               .values("fecha").annotate(t=Sum("monto"))):
         base[f["fecha"]]["gastos"] = f["t"]
+    for f in _insumos(negocio, desde, hasta).values("compra__fecha").annotate(t=Sum("subtotal")):
+        base[f["compra__fecha"]]["gastos"] += f["t"]
 
     for f in (PagoCredito.objects.filter(negocio=negocio, fecha__range=(desde, hasta))
               .values("fecha").annotate(t=Sum("aplicado_interes"))):
@@ -77,7 +86,13 @@ def resumen(negocio, desde, hasta):
               .aggregate(t=Sum("monto"))["t"] or CERO)
     gastos_cat = list(Gasto.objects.filter(negocio=negocio, anulado=False, fecha__range=(desde, hasta))
                       .values(categoria_nombre=F("categoria__nombre")).annotate(total=Sum("monto")).order_by("-total"))
-    compras = (Compra.objects.filter(negocio=negocio, fecha__range=(desde, hasta)).aggregate(t=Sum("total"))["t"] or CERO)
+    insumos = _insumos(negocio, desde, hasta).aggregate(t=Sum("subtotal"))["t"] or CERO
+    if insumos:
+        gastos += insumos
+        gastos_cat = sorted(gastos_cat + [{"categoria_nombre": "Insumos (compras)", "total": insumos}], key=lambda g: -g["total"])
+    # Mercancía comprada (lo que entra al inventario); los insumos ya van en gastos
+    compras = (Compra.objects.filter(negocio=negocio, anulada=False, fecha__range=(desde, hasta))
+               .aggregate(t=Sum("total"))["t"] or CERO) - insumos
 
     pagos_cred = PagoCredito.objects.filter(negocio=negocio, fecha__range=(desde, hasta))
     pc = pagos_cred.aggregate(i=Sum("aplicado_interes"), c=Sum("aplicado_capital"))
