@@ -162,7 +162,9 @@ function ListaGastos({ per }) {
 
 /* ---------- Compras ---------- */
 const OTRO = "otro"; // línea de algo que no está en el menú (insumo)
-const lineaDe = (d) => ({ producto: d.insumo ? OTRO : String(d.producto), nombre: d.insumo ? d.nombre : "", cantidad: String(Number(d.cantidad)), total: Number(d.subtotal) });
+const NUEVO = "nuevo"; // producto que se compra por primera vez: se crea en el catálogo con la compra
+const lineaVacia = () => ({ producto: "", nombre: "", cantidad: "", total: 0, precio: 0, categoria: "" });
+const lineaDe = (d) => ({ ...lineaVacia(), producto: d.insumo ? OTRO : String(d.producto), nombre: d.insumo ? d.nombre : "", cantidad: String(Number(d.cantidad)), total: Number(d.subtotal) });
 
 /** Nueva compra o corregir una ya registrada (`compra`). */
 function FormCompra({ proveedores, compra, onCerrar }) {
@@ -171,8 +173,9 @@ function FormCompra({ proveedores, compra, onCerrar }) {
   const medios = negocio.medios_pago_activos;
   const { data: productos = [] } = useQuery({ queryKey: ["productos", "admin"], queryFn: () => api("/productos/") });
   const activos = productos.filter((p) => p.activo || compra?.detalles.some((d) => d.producto === p.id));
+  const { data: categorias = [] } = useQuery({ queryKey: ["categorias"], queryFn: () => api("/categorias/") });
   // Se escribe lo que dice la factura: cuántas unidades y cuánto se pagó por todas; el valor por unidad sale solo
-  const [items, setItems] = useState(compra ? compra.detalles.map(lineaDe) : [{ producto: "", nombre: "", cantidad: "", total: 0 }]);
+  const [items, setItems] = useState(compra ? compra.detalles.map(lineaDe) : [lineaVacia()]);
   const [f, setF] = useState(compra
     ? { proveedor: compra.proveedor || "", medio: compra.medio, pagado_de_caja: compra.pagado_de_caja, nota: compra.nota, fecha: compra.fecha }
     : { proveedor: "", medio: medios.includes("EFECTIVO") ? "EFECTIVO" : medios[0], pagado_de_caja: true, nota: "", fecha: hoyISO() });
@@ -181,8 +184,9 @@ function FormCompra({ proveedores, compra, onCerrar }) {
   const insumos = items.reduce((s, it) => s + (it.producto === OTRO ? it.total || 0 : 0), 0);
   const setItem = (i, k, v) => setItems((xs) => xs.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
   const unitario = (it) => (Number(it.cantidad) > 0 && it.total > 0 ? it.total / Number(it.cantidad) : null);
-  const validos = items.filter((it) => (it.producto === OTRO ? it.nombre.trim() : it.producto) && Number(it.cantidad) > 0 && it.total > 0);
-  const listo = () => { ["compras", "productos", "caja", "reportes"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })); onCerrar(); };
+  const validos = items.filter((it) => (it.producto === OTRO ? it.nombre.trim() : it.producto === NUEVO ? it.nombre.trim() && it.precio > 0 : it.producto)
+    && Number(it.cantidad) > 0 && it.total > 0);
+  const listo = () => { ["compras", "productos", "caja", "reportes", "categorias"].forEach((k) => qc.invalidateQueries({ queryKey: [k] })); onCerrar(); };
   const guardar = useMutation({
     mutationFn: () => api(compra ? `/compras/${compra.id}/editar/` : "/compras/", {
       method: "POST",
@@ -190,7 +194,9 @@ function FormCompra({ proveedores, compra, onCerrar }) {
         ...f, proveedor: f.proveedor || null,
         items: validos.map((it) => (it.producto === OTRO
           ? { nombre: it.nombre.trim(), cantidad: Number(it.cantidad), total: it.total }
-          : { producto: Number(it.producto), cantidad: Number(it.cantidad), total: it.total })),
+          : it.producto === NUEVO
+            ? { nuevo: { nombre: it.nombre.trim(), precio: it.precio, categoria: it.categoria ? Number(it.categoria) : null }, cantidad: Number(it.cantidad), total: it.total }
+            : { producto: Number(it.producto), cantidad: Number(it.cantidad), total: it.total })),
       },
     }),
     onSuccess: listo,
@@ -203,8 +209,8 @@ function FormCompra({ proveedores, compra, onCerrar }) {
   return (
     <Hoja titulo={compra ? `Compra #${compra.numero}` : "Nueva compra a proveedor"} onCerrar={onCerrar} ancho="max-w-2xl">
       <p className="-mt-2 mb-4 text-sm text-suave">
-        Lo del menú suma al inventario y actualiza su costo. Lo que no está en el menú (leche, vasos, servilletas…) se elige como
-        <strong> Otro</strong>: no entra al inventario y cuenta como gasto.
+        Lo del menú suma al inventario y actualiza su costo. Si vas a vender algo que aún no tienes, elige <strong>+ Producto nuevo</strong> y
+        queda creado con esta compra. Lo que no se vende (leche, vasos, servilletas…) va como <strong>Otro</strong>: cuenta como gasto.
       </p>
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); guardar.mutate(); }}>
         <div className="space-y-2">
@@ -213,9 +219,21 @@ function FormCompra({ proveedores, compra, onCerrar }) {
               <div className="grid grid-cols-[5.5rem_1fr_2.5rem] gap-2 sm:grid-cols-[1fr_6rem_10rem_2.5rem]">
                 <select value={it.producto} onChange={(e) => setItem(i, "producto", e.target.value)} className={`${campo} col-span-3 sm:col-span-1`} aria-label="Producto">
                   <option value="">Producto…</option>
+                  <option value={NUEVO}>+ Producto nuevo…</option>
                   {activos.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
                   <option value={OTRO}>Otro (no está en el menú)…</option>
                 </select>
+                {it.producto === NUEVO && (
+                  <div className="col-span-3 grid gap-2 rounded-lg bg-fondo p-2 sm:order-last sm:col-span-4 sm:grid-cols-[1fr_9rem_10rem]">
+                    <input value={it.nombre} onChange={(e) => setItem(i, "nombre", e.target.value)} placeholder="Nombre del producto nuevo"
+                      className={campo} aria-label="Nombre del producto nuevo" autoFocus />
+                    <InputPesos valor={it.precio} onCambio={(v) => setItem(i, "precio", v)} placeholder="Precio de venta" aria-label="Precio de venta" />
+                    <select value={it.categoria} onChange={(e) => setItem(i, "categoria", e.target.value)} className={campo} aria-label="Categoría">
+                      <option value="">Sin categoría</option>
+                      {categorias.filter((c) => c.activa).map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                    </select>
+                  </div>
+                )}
                 {it.producto === OTRO && (
                   <input value={it.nombre} onChange={(e) => setItem(i, "nombre", e.target.value)} placeholder="¿Qué compraste? Ej. Leche 6 L, vasos 7 oz"
                     className={`${campo} col-span-3 sm:order-last sm:col-span-3`} aria-label="Qué compraste" autoFocus />
@@ -228,11 +246,17 @@ function FormCompra({ proveedores, compra, onCerrar }) {
               </div>
               <p className="mt-1 text-right text-xs text-suave sm:pr-12">
                 {it.producto === OTRO && <span className="mr-2 rounded bg-precio-claro px-1.5 py-0.5 font-semibold text-texto">Gasto · no entra al inventario</span>}
+                {it.producto === NUEVO && <span className="mr-2 rounded bg-ok-claro px-1.5 py-0.5 font-semibold text-ok">Nuevo · se agrega a Productos</span>}
+                {it.producto === NUEVO && it.precio > 0 && unitario(it) != null && (
+                  <span className={`mr-2 ${it.precio > unitario(it) ? "" : "font-semibold text-alerta"}`}>
+                    {it.precio > unitario(it) ? <>Ganas <strong className="num">{pesos(it.precio - unitario(it))}</strong> c/u ·</> : "Se vende por menos de lo que cuesta ·"}
+                  </span>
+                )}
                 {unitario(it) != null ? <>Sale a <strong className="num">{pesos(unitario(it))}</strong> por unidad</> : "Unidades y total pagado → valor por unidad"}
               </p>
             </div>
           ))}
-          <button type="button" onClick={() => setItems((xs) => [...xs, { producto: "", nombre: "", cantidad: "", total: 0 }])} className="flex items-center gap-1.5 text-sm font-semibold text-tinta">
+          <button type="button" onClick={() => setItems((xs) => [...xs, lineaVacia()])} className="flex items-center gap-1.5 text-sm font-semibold text-tinta">
             <Plus size={16} aria-hidden /> Agregar otra línea
           </button>
         </div>

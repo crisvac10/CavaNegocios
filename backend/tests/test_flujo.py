@@ -839,6 +839,28 @@ class GastosComprasYCreditosAnteriores(Base):
         self.login("cajero")
         self.assertEqual(self.c.post(f"/api/compras/{c['id']}/editar/", {"items": []}, format="json").status_code, 403)
 
+    def test_compra_con_producto_nuevo(self):
+        self.login("dueno")
+        # Llega algo que nunca se había vendido: se crea en el catálogo con la misma compra
+        c = self.ok(self.c.post("/api/compras/", {"items": [
+            {"nuevo": {"nombre": "Brownie", "precio": 4500, "categoria": self.cat.id}, "cantidad": 12, "total": 24000},
+            {"producto": self.cafe.id, "cantidad": 5, "total": 5000}]}, format="json"), 201)
+        from catalogo.models import Producto
+        b = Producto.objects.get(negocio=self.neg, nombre="Brownie")
+        self.assertEqual((b.precio, b.costo, b.stock, b.categoria_id, b.activo), (4500, 2000, 12, self.cat.id, True))
+        self.assertEqual(c["detalles"][0]["nombre"], "Brownie")
+        # Ya se puede vender
+        v = self.ok(self.c.post("/api/ventas/", {"items": [{"producto": b.id, "cantidad": 2}], "pagos": [{"medio": "EFECTIVO", "monto": 9000}]}, format="json"), 201)
+        self.assertEqual(v["total"], 9000)
+        # No se duplica: si ya existe, se elige de la lista
+        r = self.c.post("/api/compras/", {"items": [{"nuevo": {"nombre": "brownie", "precio": 4500}, "cantidad": 1, "total": 2000}]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Ya tienes", r.content.decode())
+        # Y si la compra falla, no queda el producto creado a medias
+        r = self.c.post("/api/compras/", {"items": [{"nuevo": {"nombre": "Galleta", "precio": 1500}, "cantidad": 0, "total": 2000}]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Producto.objects.filter(negocio=self.neg, nombre="Galleta").exists())
+
     def test_borrar_credito_limpia_el_cuadre(self):
         self.login("dueno")
         cr = self.ok(self.c.post("/api/creditos/", {"entidad": "Banco", "monto": 1_000_000, "tasa": 24, "num_cuotas": 6,

@@ -9,7 +9,7 @@ from rest_framework.response import Response
 
 from caja import servicios as caja
 from caja.models import MovimientoCaja
-from catalogo.models import Producto
+from catalogo.models import Categoria, Producto
 from inventario.models import MovimientoInventario
 from inventario.servicios import mover_stock
 from negocios.mixins import PERMISOS_TENANT, TenantMixin, TenantModelViewSet
@@ -54,6 +54,13 @@ class GastoSerializer(serializers.ModelSerializer):
         return v
 
 
+class NuevoProductoEntrada(serializers.Serializer):
+    """Producto que se compra por primera vez: se crea en el catálogo con la compra."""
+    nombre = serializers.CharField(max_length=120)
+    precio = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0)  # precio de venta
+    categoria = serializers.IntegerField(required=False, allow_null=True)
+
+
 class DetalleCompraEntrada(serializers.Serializer):
     """
     Se manda el valor TOTAL pagado por la línea (lo natural en una factura) o el costo unitario.
@@ -61,6 +68,7 @@ class DetalleCompraEntrada(serializers.Serializer):
     """
     producto = serializers.IntegerField(required=False, allow_null=True)
     nombre = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    nuevo = NuevoProductoEntrada(required=False)
     cantidad = serializers.DecimalField(max_digits=14, decimal_places=3)
     total = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
     costo_unitario = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
@@ -68,7 +76,7 @@ class DetalleCompraEntrada(serializers.Serializer):
     def validate(self, d):
         if d.get("total") is None and d.get("costo_unitario") is None:
             raise serializers.ValidationError("Envía el total de la línea o el costo unitario.")
-        if not d.get("producto") and not (d.get("nombre") or "").strip():
+        if not d.get("producto") and not d.get("nuevo") and not (d.get("nombre") or "").strip():
             raise serializers.ValidationError("Elige el producto o escribe qué compraste.")
         return d
 
@@ -180,7 +188,24 @@ class CompraViewSet(TenantMixin, mixins.ListModelMixin, mixins.RetrieveModelMixi
         return qs
 
     # --- inventario ---
+    def _crear_producto(self, nuevo):
+        nombre = nuevo["nombre"].strip()
+        if not nombre:
+            raise ValidationError("Escribe el nombre del producto nuevo.")
+        if Producto.objects.filter(negocio=self.negocio, nombre__iexact=nombre).exists():
+            raise ValidationError(f"Ya tienes un producto llamado «{nombre}»: elígelo en la lista.")
+        categoria = None
+        if nuevo.get("categoria"):
+            categoria = Categoria.objects.filter(negocio=self.negocio, pk=nuevo["categoria"]).first()
+            if categoria is None:
+                raise ValidationError("Esa categoría no existe.")
+        return Producto.objects.create(negocio=self.negocio, nombre=nombre, precio=nuevo["precio"],
+                                       categoria=categoria, controla_stock=True)
+
     def _aplicar(self, compra, items):
+        for it in items:  # productos nuevos: se crean primero y quedan como cualquier otro
+            if it.get("nuevo") and not it.get("producto"):
+                it["producto"] = self._crear_producto(it["nuevo"]).id
         ids = [i["producto"] for i in items if i.get("producto")]
         productos = {p.id: p for p in Producto.objects.filter(negocio=self.negocio, id__in=ids)}
         total = CERO
